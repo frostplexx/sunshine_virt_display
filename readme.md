@@ -60,6 +60,7 @@ path/to/virt_display.sh --disconnect
 
 - Everything is small when a device with retina display connects
 - Disconnecting is sometimes slow and janky but will fix itself after ~15s
+- On MacBooks with notches the notch will be ignored and will cut into content
 
 ## Tested On
 
