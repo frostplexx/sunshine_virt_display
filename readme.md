@@ -56,9 +56,10 @@ path/to/virt_display.sh --disconnect
 2. Disable the virtual display: `echo off | sudo tee /sys/class/drm/card1-<port>/status`
 3. Re-enable previously connected physical displays: `echo on | sudo tee /sys/class/drm/card1-<port>/status`
 
-## Known Limitations
+## Known Issues
 
 - Everything is small when a device with retina display connects
+- Disconnecting is sometimes slow and janky but will fix itself after ~15s
 
 ## Tested On
 
