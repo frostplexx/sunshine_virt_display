@@ -1,9 +1,5 @@
 # Sunshine Virtual Display
 
-A script to dynamically create virtual displays for Sunshine game streaming on Linux using EDID overrides.
-
-## Overview
-
 This tool creates virtual displays that match the client's resolution and refresh rate when streaming via Sunshine. 
 It automatically manages display connections by overriding EDID information and toggling display status.
 
