@@ -36,6 +36,7 @@ path/to/virt_display.sh --disconnect
 
 - The script requires root privileges to modify display settings
 - Ensure debugfs is mounted at `/sys/kernel/debug/`
+- Python 3
 
 ## How It Works
 
