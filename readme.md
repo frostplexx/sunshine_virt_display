@@ -9,6 +9,8 @@ It automatically manages display connections by overriding EDID information and 
 
 ## Usage
 
+⚠️ Its is recommended to enable ssh in case something goes wrong and you get stuck with a disabled display. You can always run `virt_display.sh --disconnect` to turn on your old display.
+
 
 Clone the repo
 
