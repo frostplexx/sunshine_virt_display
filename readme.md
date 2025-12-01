@@ -11,7 +11,7 @@ It automatically manages display connections by overriding EDID information and 
 Clone the repo
 
 ```bash
-git clone http://frostplexx/sunshine_virt_display
+git clone https://github.com/frostplexx/sunshine_virt_display
 ```
 
 Modify `virt_display.sh` and add your sudo password at the top. Also make sure that the file is executable by running `chmod +x virt_display.sh`.
