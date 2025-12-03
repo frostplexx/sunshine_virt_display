@@ -32,10 +32,281 @@ COMMON_REFRESH_RATES = {
     "7": 240,
 }
 
+# CEA-861 Video Identification Code (VIC) standard resolutions
+# Complete list from https://en.wikipedia.org/wiki/Extended_Display_Identification_Data
+# Format: VIC: (width, height, refresh_rate, name)
+# Note: Using integer refresh rates for interlaced (i) formats, actual rates like 59.94 rounded to 60
+VIC_RESOLUTIONS = {
+    1: (640, 480, 60, "DMT0659"),
+    2: (720, 480, 60, "480p"),
+    3: (720, 480, 60, "480pH"),
+    4: (1280, 720, 60, "720p"),
+    5: (1920, 1080, 60, "1080i"),
+    6: (1440, 480, 60, "480i"),
+    7: (1440, 480, 60, "480iH"),
+    8: (1440, 240, 60, "240p"),
+    9: (1440, 240, 60, "240pH"),
+    10: (2880, 480, 60, "480i4x"),
+    11: (2880, 480, 60, "480i4xH"),
+    12: (2880, 240, 60, "240p4x"),
+    13: (2880, 240, 60, "240p4xH"),
+    14: (1440, 480, 60, "480p2x"),
+    15: (1440, 480, 60, "480p2xH"),
+    16: (1920, 1080, 60, "1080p"),
+    17: (720, 576, 50, "576p"),
+    18: (720, 576, 50, "576pH"),
+    19: (1280, 720, 50, "720p50"),
+    20: (1920, 1080, 50, "1080i25"),
+    21: (1440, 576, 50, "576i"),
+    22: (1440, 576, 50, "576iH"),
+    23: (1440, 288, 50, "288p"),
+    24: (1440, 288, 50, "288pH"),
+    25: (2880, 576, 50, "576i4x"),
+    26: (2880, 576, 50, "576i4xH"),
+    27: (2880, 288, 50, "288p4x"),
+    28: (2880, 288, 50, "288p4xH"),
+    29: (1440, 576, 50, "576p2x"),
+    30: (1440, 576, 50, "576p2xH"),
+    31: (1920, 1080, 50, "1080p50"),
+    32: (1920, 1080, 24, "1080p24"),
+    33: (1920, 1080, 25, "1080p25"),
+    34: (1920, 1080, 30, "1080p30"),
+    35: (2880, 480, 60, "480p4x"),
+    36: (2880, 480, 60, "480p4xH"),
+    37: (2880, 576, 50, "576p4x"),
+    38: (2880, 576, 50, "576p4xH"),
+    39: (1920, 1080, 50, "1080i25_2"),
+    40: (1920, 1080, 100, "1080i50"),
+    41: (1280, 720, 100, "720p100"),
+    42: (720, 576, 100, "576p100"),
+    43: (720, 576, 100, "576p100H"),
+    44: (1440, 576, 100, "576i50"),
+    45: (1440, 576, 100, "576i50H"),
+    46: (1920, 1080, 120, "1080i60"),
+    47: (1280, 720, 120, "720p120"),
+    48: (720, 480, 120, "480p119"),
+    49: (720, 480, 120, "480p119H"),
+    50: (1440, 480, 120, "480i59"),
+    51: (1440, 480, 120, "480i59H"),
+    52: (720, 576, 200, "576p200"),
+    53: (720, 576, 200, "576p200H"),
+    54: (1440, 288, 200, "576i100"),
+    55: (1440, 288, 200, "576i100H"),
+    56: (720, 480, 240, "480p239"),
+    57: (720, 480, 240, "480p239H"),
+    58: (1440, 240, 240, "480i119"),
+    59: (1440, 240, 240, "480i119H"),
+    60: (1280, 720, 24, "720p24"),
+    61: (1280, 720, 25, "720p25"),
+    62: (1280, 720, 30, "720p30"),
+    63: (1920, 1080, 120, "1080p120"),
+    64: (1920, 1080, 100, "1080p100"),
+    65: (1280, 720, 24, "720p24_64:27"),
+    66: (1280, 720, 25, "720p25_64:27"),
+    67: (1280, 720, 30, "720p30_64:27"),
+    68: (1280, 720, 50, "720p50_64:27"),
+    69: (1280, 720, 60, "720p_64:27"),
+    70: (1280, 720, 100, "720p100_64:27"),
+    71: (1280, 720, 120, "720p120_64:27"),
+    72: (1920, 1080, 24, "1080p24_64:27"),
+    73: (1920, 1080, 25, "1080p25_64:27"),
+    74: (1920, 1080, 30, "1080p30_64:27"),
+    75: (1920, 1080, 50, "1080p50_64:27"),
+    76: (1920, 1080, 60, "1080p_64:27"),
+    77: (1920, 1080, 100, "1080p100_64:27"),
+    78: (1920, 1080, 120, "1080p120_64:27"),
+    79: (1680, 720, 24, "720p2x24"),
+    80: (1680, 720, 25, "720p2x25"),
+    81: (1680, 720, 30, "720p2x30"),
+    82: (1680, 720, 50, "720p2x50"),
+    83: (1680, 720, 60, "720p2x"),
+    84: (1680, 720, 100, "720p2x100"),
+    85: (1680, 720, 120, "720p2x120"),
+    86: (2560, 1080, 24, "1080p2x24"),
+    87: (2560, 1080, 25, "1080p2x25"),
+    88: (2560, 1080, 30, "1080p2x30"),
+    89: (2560, 1080, 50, "1080p2x50"),
+    90: (2560, 1080, 60, "1080p2x"),
+    91: (2560, 1080, 100, "1080p2x100"),
+    92: (2560, 1080, 120, "1080p2x120"),
+    93: (3840, 2160, 24, "2160p24"),
+    94: (3840, 2160, 25, "2160p25"),
+    95: (3840, 2160, 30, "2160p30"),
+    96: (3840, 2160, 50, "2160p50"),
+    97: (3840, 2160, 60, "2160p60"),
+    98: (4096, 2160, 24, "2160p24_256:135"),
+    99: (4096, 2160, 25, "2160p25_256:135"),
+    100: (4096, 2160, 30, "2160p30_256:135"),
+    101: (4096, 2160, 50, "2160p50_256:135"),
+    102: (4096, 2160, 60, "2160p_256:135"),
+    103: (3840, 2160, 24, "2160p24_64:27"),
+    104: (3840, 2160, 25, "2160p25_64:27"),
+    105: (3840, 2160, 30, "2160p30_64:27"),
+    106: (3840, 2160, 50, "2160p50_64:27"),
+    107: (3840, 2160, 60, "2160p_64:27"),
+    108: (1280, 720, 48, "720p48"),
+    109: (1280, 720, 48, "720p48_64:27"),
+    110: (1680, 720, 48, "720p2x48"),
+    111: (1920, 1080, 48, "1080p48"),
+    112: (1920, 1080, 48, "1080p48_64:27"),
+    113: (2560, 1080, 48, "1080p2x48"),
+    114: (3840, 2160, 48, "2160p48"),
+    115: (4096, 2160, 48, "2160p48_256:135"),
+    116: (3840, 2160, 48, "2160p48_64:27"),
+    117: (3840, 2160, 100, "2160p100"),
+    118: (3840, 2160, 120, "2160p120"),
+    119: (3840, 2160, 100, "2160p100_64:27"),
+    120: (3840, 2160, 120, "2160p120_64:27"),
+    121: (5120, 2160, 24, "2160p2x24"),
+    122: (5120, 2160, 25, "2160p2x25"),
+    123: (5120, 2160, 30, "2160p2x30"),
+    124: (5120, 2160, 48, "2160p2x48"),
+    125: (5120, 2160, 50, "2160p2x50"),
+    126: (5120, 2160, 60, "2160p2x"),
+    127: (5120, 2160, 100, "2160p2x100"),
+    193: (5120, 2160, 120, "2160p2x120"),
+    194: (7680, 4320, 24, "4320p24"),
+    195: (7680, 4320, 25, "4320p25"),
+    196: (7680, 4320, 30, "4320p30"),
+    197: (7680, 4320, 48, "4320p48"),
+    198: (7680, 4320, 50, "4320p50"),
+    199: (7680, 4320, 60, "4320p"),
+    200: (7680, 4320, 100, "4320p100"),
+    201: (7680, 4320, 120, "4320p120"),
+    202: (7680, 4320, 24, "4320p24_64:27"),
+    203: (7680, 4320, 25, "4320p25_64:27"),
+    204: (7680, 4320, 30, "4320p30_64:27"),
+    205: (7680, 4320, 48, "4320p48_64:27"),
+    206: (7680, 4320, 50, "4320p50_64:27"),
+    207: (7680, 4320, 60, "4320p_64:27"),
+    208: (7680, 4320, 100, "4320p100_64:27"),
+    209: (7680, 4320, 120, "4320p120_64:27"),
+    210: (10240, 4320, 24, "4320p2x24"),
+    211: (10240, 4320, 25, "4320p2x25"),
+    212: (10240, 4320, 30, "4320p2x30"),
+    213: (10240, 4320, 48, "4320p2x48"),
+    214: (10240, 4320, 50, "4320p2x50"),
+    215: (10240, 4320, 60, "4320p2x"),
+    216: (10240, 4320, 100, "4320p2x100"),
+    217: (10240, 4320, 120, "4320p2x120"),
+    218: (4096, 2160, 100, "2160p100_256:135"),
+    219: (4096, 2160, 120, "2160p120_256:135"),
+}
+
+
+def find_best_vic_resolution(target_width, target_height, target_refresh):
+    """
+    Find the next best VIC resolution from the standard list.
+    Prioritizes: 1) Refresh rate, 2) Resolution (if aspect is reasonable), 3) Aspect ratio
+
+    Args:
+        target_width: Desired horizontal resolution
+        target_height: Desired vertical resolution
+        target_refresh: Desired refresh rate in Hz
+
+    Returns:
+        Tuple of (width, height, refresh_rate, vic_code, name) or None if no match
+    """
+    target_pixels = target_width * target_height
+    target_aspect = target_width / target_height
+
+    # Create a list of (vic, score, width, height, refresh, name) tuples
+    candidates = []
+
+    for vic, (width, height, refresh, name) in VIC_RESOLUTIONS.items():
+        pixels = width * height
+        aspect = width / height
+
+        # Skip VIC resolutions that would also break the calculation
+        if check_if_calculation_breaks(width, height, refresh):
+            continue
+
+        # Calculate score components:
+        # 1. Refresh rate difference (highest priority - weighted at 100000)
+        refresh_diff = abs(refresh - target_refresh)
+
+        # 2. Resolution difference (high priority - weighted at 1000)
+        #    We want to maximize resolution when possible
+        resolution_diff = abs(pixels - target_pixels) / target_pixels
+
+        # 3. Aspect ratio difference (medium priority - weighted at 500)
+        #    But penalize extreme aspect ratio mismatches heavily
+        aspect_diff = abs(aspect - target_aspect)
+        aspect_penalty = aspect_diff * 500
+
+        # Add extra penalty for extreme aspect mismatches (>0.3 difference)
+        if aspect_diff > 0.3:
+            aspect_penalty += (aspect_diff - 0.3) * 2000
+
+        # Combined score: prioritize refresh rate >> resolution >> aspect ratio
+        score = (refresh_diff * 100000) + (resolution_diff * 1000) + aspect_penalty
+
+        candidates.append((vic, score, width, height, refresh, name, aspect))
+
+    # Sort by score (lower is better)
+    candidates.sort(key=lambda x: x[1])
+
+    if candidates:
+        best = candidates[0]
+        vic, score, width, height, refresh, name, aspect = best
+        print(f"\nBest VIC match: VIC {vic} - {name}")
+        print(f"  Resolution: {width}x{height} @ {refresh}Hz (aspect: {aspect:.2f})")
+        print(
+            f"  Requested:  {target_width}x{target_height} @ {target_refresh}Hz (aspect: {target_aspect:.2f})"
+        )
+        return (width, height, refresh, vic, name)
+
+    return None
+
 
 def calculate_checksum(data):
     """Calculate EDID checksum (sum of all bytes must be 0 mod 256)"""
     return (256 - (sum(data) % 256)) % 256
+
+
+def check_if_calculation_breaks(width, height, refresh_rate):
+    """
+    Check if the given resolution/refresh rate combination would break EDID calculation.
+    Returns True if it would break, False otherwise.
+
+    The calculation breaks when pixel clock exceeds the maximum value (655.35 MHz).
+    """
+    # Calculate blanking intervals (same as in create_edid)
+    h_blank = max(80, int(width * 0.08))
+    h_total = width + h_blank
+
+    # Estimate v_blank
+    v_blank_estimate = max(23, int(height * 0.025))
+    pixel_clock_hz = h_total * (height + v_blank_estimate) * refresh_rate
+
+    # EDID pixel clock is in units of 10 kHz, max value is 65535
+    pixel_clock = int(pixel_clock_hz / 10000)
+    max_pixel_clock = 65535
+
+    # Check if pixel clock exceeds maximum
+    if pixel_clock > max_pixel_clock:
+        return True
+
+    return False
+
+
+def get_pixel_clock_info(width, height, refresh_rate):
+    """
+    Get detailed pixel clock information for diagnostics.
+    Returns (pixel_clock_mhz, max_mhz, would_break)
+    """
+    h_blank = max(80, int(width * 0.08))
+    h_total = width + h_blank
+    v_blank_estimate = max(23, int(height * 0.025))
+    pixel_clock_hz = h_total * (height + v_blank_estimate) * refresh_rate
+    pixel_clock = int(pixel_clock_hz / 10000)
+    max_pixel_clock = 65535
+
+    pixel_clock_mhz = pixel_clock_hz / 1000000
+    max_mhz = max_pixel_clock * 10000 / 1000000
+    would_break = pixel_clock > max_pixel_clock
+
+    return (pixel_clock_mhz, max_mhz, would_break)
 
 
 def create_edid(
@@ -404,15 +675,27 @@ def interactive_mode():
 def main():
     """Generate and output EDID binary"""
     parser = argparse.ArgumentParser(
-        description="Generate custom EDID with configurable settings",
+        description="Generate custom EDID with configurable settings and automatic VIC fallback",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                                    # Interactive mode
-  %(prog)s -r 1920x1080 --hz 60               # 1080p@60Hz with HDR
-  %(prog)s -r 2560x1440 --hz 144              # 1440p@144Hz with HDR
-  %(prog)s -r 3840x2160 --hz 120 --no-hdr     # 4K@120Hz without HDR
-  %(prog)s -r 1280x800 --hz 90 -o deck.bin    # Steam Deck specs
+  %(prog)s                                         # Interactive mode
+  %(prog)s -r 1920x1080 --hz 60                    # 1080p@60Hz with HDR
+  %(prog)s -r 2560x1440 --hz 144                   # 1440p@144Hz (uses custom resolution if valid)
+  %(prog)s -r 3840x2160 --hz 240 --no-hdr          # Would exceed limits, auto-fallback to VIC
+  %(prog)s -r 1920x1080 --hz 120 --use-vic         # Force VIC resolution matching
+
+VIC Resolution Fallback:
+  The generator will automatically fall back to the closest CEA-861 standard 
+  resolution (VIC code) when the requested resolution/refresh rate combination 
+  would exceed the EDID pixel clock limit (655.35 MHz). 
+  
+  Matching priority:
+    1. Refresh rate (highest priority - maintains smoothness)
+    2. Resolution (high priority - maintains detail)
+    3. Aspect ratio (penalizes extreme mismatches)
+  
+  Use --use-vic to force VIC resolution matching even when not required.
         """,
     )
 
@@ -440,6 +723,11 @@ Examples:
     )
     parser.add_argument(
         "-o", "--output", default="edid.bin", help="Output filename (default: edid.bin)"
+    )
+    parser.add_argument(
+        "--use-vic",
+        action="store_true",
+        help="Force use of the closest VIC standard resolution (automatic fallback occurs when pixel clock exceeds limits)",
     )
 
     args = parser.parse_args()
@@ -477,6 +765,62 @@ Examples:
         if refresh_rate < 24 or refresh_rate > 240:
             print(f"Error: Refresh rate {refresh_rate} out of range (24-240)")
             sys.exit(1)
+
+    # Check if calculation would break and use VIC fallback if needed
+    will_break = check_if_calculation_breaks(width, height, refresh_rate)
+
+    if will_break:
+        print("\n" + "=" * 60)
+        print("⚠️  WARNING: Resolution/refresh rate would exceed pixel clock limit!")
+        print(f"   Requested: {width}x{height} @ {refresh_rate}Hz")
+        print("   Finding best VIC standard resolution as fallback...")
+        print("=" * 60)
+
+        vic_result = find_best_vic_resolution(width, height, refresh_rate)
+
+        if vic_result:
+            vic_width, vic_height, vic_refresh, vic_code, vic_name = vic_result
+
+            # In command-line mode with --use-vic or when it breaks, use VIC automatically
+            if not (
+                args.interactive or (not args.resolution and not args.refresh_rate)
+            ):
+                width, height, refresh_rate = vic_width, vic_height, vic_refresh
+                print(
+                    f"\nAutomatically using VIC {vic_code}: {width}x{height} @ {refresh_rate}Hz"
+                )
+            else:
+                # In interactive mode, ask the user
+                print(
+                    f"\nRecommended VIC {vic_code}: {width}x{height} @ {refresh_rate}Hz"
+                )
+                use_vic = (
+                    input("Use this VIC resolution? (y/n, default=y): ").strip().lower()
+                )
+
+                if use_vic != "n":
+                    width, height, refresh_rate = vic_width, vic_height, vic_refresh
+                    print(f"Using VIC {vic_code} standard resolution")
+                else:
+                    print(
+                        "⚠️  Continuing with custom resolution (may not work correctly)"
+                    )
+        else:
+            print("\n⚠️  ERROR: No suitable VIC resolution found!")
+            print("   The requested resolution may not work correctly.")
+    elif args.use_vic:
+        # Only use VIC if explicitly requested and calculation doesn't break
+        print("\n" + "=" * 60)
+        print("Finding best VIC resolution (--use-vic flag)...")
+        print("=" * 60)
+
+        vic_result = find_best_vic_resolution(width, height, refresh_rate)
+        if vic_result:
+            vic_width, vic_height, vic_refresh, vic_code, vic_name = vic_result
+            width, height, refresh_rate = vic_width, vic_height, vic_refresh
+            print(
+                f"\nUsing VIC {vic_code} standard resolution: {width}x{height} @ {refresh_rate}Hz"
+            )
 
     # Generate EDID
     print("\n" + "=" * 60)

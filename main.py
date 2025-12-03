@@ -153,6 +153,48 @@ def connect_virtual_display(width, height, refresh_rate):
 
     # Step 1: Generate custom EDID
     print("Step 1: Generating custom EDID...")
+    print(f"  Requested: {width}x{height} @ {refresh_rate}Hz")
+
+    # Import the necessary functions from gen_edid
+    from gen_edid import (
+        check_if_calculation_breaks,
+        find_best_vic_resolution,
+        get_pixel_clock_info,
+    )
+
+    # Get pixel clock info for diagnostics
+    pixel_clock_mhz, max_mhz, will_break = get_pixel_clock_info(
+        width, height, refresh_rate
+    )
+    print(f"  Pixel clock: {pixel_clock_mhz:.2f} MHz (max: {max_mhz:.2f} MHz)")
+
+    # Check if the resolution would break
+    if will_break:
+        print(
+            f"  ⚠️  WARNING: Pixel clock exceeds limit by {pixel_clock_mhz - max_mhz:.2f} MHz!"
+        )
+        print(f"  Finding best VIC standard resolution...")
+
+        vic_result = find_best_vic_resolution(width, height, refresh_rate)
+        if vic_result:
+            vic_width, vic_height, vic_refresh, vic_code, vic_name = vic_result
+            print(
+                f"  → Falling back to VIC {vic_code}: {vic_width}x{vic_height} @ {vic_refresh}Hz ({vic_name})"
+            )
+
+            # Show new pixel clock
+            new_clock_mhz, _, _ = get_pixel_clock_info(
+                vic_width, vic_height, vic_refresh
+            )
+            print(f"  → New pixel clock: {new_clock_mhz:.2f} MHz")
+
+            width, height, refresh_rate = vic_width, vic_height, vic_refresh
+        else:
+            print(f"  ⚠️  No suitable VIC found, attempting custom resolution anyway...")
+    else:
+        print(f"  ✓ Pixel clock within limits")
+        print(f"  ✓ Using custom resolution: {width}x{height} @ {refresh_rate}Hz")
+
     edid_data = create_edid(
         width=width,
         height=height,
@@ -163,7 +205,9 @@ def connect_virtual_display(width, height, refresh_rate):
 
     edid_file = SCRIPT_DIR / "custom_edid.bin"
     edid_file.write_bytes(edid_data)
-    print(f"  ✓ Created {edid_file}")
+    print(f"  ✓ Created EDID file: {edid_file}")
+    print(f"  ✓ Final resolution: {width}x{height} @ {refresh_rate}Hz")
+    print(f"  ✓ EDID size: {len(edid_data)} bytes")
 
     # Step 2: Find DRM devices and list connected displays
     print("\nStep 2: Scanning displays...")
