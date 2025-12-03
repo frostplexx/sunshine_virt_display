@@ -42,7 +42,7 @@ def create_edid(
     width=1920,
     height=1080,
     refresh_rate=60,
-    enable_hdr=True,
+    enable_hdr=False,
     display_name="Custom Display",
 ):
     """
