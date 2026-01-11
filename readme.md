@@ -7,14 +7,49 @@ It automatically manages display connections by overriding EDID information and 
 
 ⚠️ Its is recommended to enable ssh in case something goes wrong and you get stuck with a disabled display. You can always run `virt_display.sh --disconnect` to turn on your old display.
 
+### Installation
 
-Clone the repo
+Clone the repo:
 
 ```bash
 git clone https://github.com/frostplexx/sunshine_virt_display
+cd sunshine_virt_display
 ```
 
-Modify `virt_display.sh` and add your sudo password at the top. Also make sure that the file is executable by running `chmod +x virt_display.sh`.
+Fetch the latest tags and check out the newest release:
+
+```bash
+git fetch --tags
+git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
+```
+
+Make the script executable:
+
+```bash
+chmod +x virt_display.sh
+```
+
+Edit the sudoers using:
+
+```bash
+sudo visudo
+```
+
+Add the following line at the end of the file, replacing your username and the path you cloned the repo to:
+
+```
+<your-username> ALL=(ALL) NOPASSWD: /usr/bin/python3 /home/<your-username>/sunshine_virt_display/main.py *
+```
+
+For example, if your username is `alice` and you cloned to `/home/alice/sunshine_virt_display`:
+
+```
+alice ALL=(ALL) NOPASSWD: /usr/bin/python3 /home/alice/sunshine_virt_display/main.py *
+```
+
+Save and exit.
+
+### Configure Sunshine
 
 Configure Sunshine to run these commands when clients connect/disconnect in the "General" tab:
 
@@ -28,6 +63,17 @@ sh -c "path/to/virt_display.sh --connect --width ${SUNSHINE_CLIENT_WIDTH} --heig
 
 ```bash
 path/to/virt_display.sh --disconnect
+```
+
+### Updating the Script
+
+To update to the latest version:
+
+```bash
+cd sunshine_virt_display
+git pull
+git fetch --tags
+git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 ```
 
 ### Important Requirements
