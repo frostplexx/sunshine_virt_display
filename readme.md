@@ -9,12 +9,18 @@ It automatically manages display connections by overriding EDID information and 
 
 ### Installation
 
-Clone the repo and checkout the latest stable release:
+Clone the repo:
 
 ```bash
 git clone https://github.com/frostplexx/sunshine_virt_display
 cd sunshine_virt_display
-git checkout v1.0.0
+```
+
+Fetch the latest tags and check out the newest release:
+
+```bash
+git fetch --tags
+git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 ```
 
 Make the script executable:
@@ -57,6 +63,17 @@ sh -c "path/to/virt_display.sh --connect --width ${SUNSHINE_CLIENT_WIDTH} --heig
 
 ```bash
 path/to/virt_display.sh --disconnect
+```
+
+### Updating the Script
+
+To update to the latest version:
+
+```bash
+cd sunshine_virt_display
+git pull
+git fetch --tags
+git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 ```
 
 ### Important Requirements
