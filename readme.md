@@ -23,31 +23,25 @@ Make the script executable:
 chmod +x virt_display.sh
 ```
 
-### Configure Passwordless Sudo (Secure Method)
-
-To avoid storing your sudo password in plaintext, configure passwordless sudo for this specific script:
-
-1. Edit the sudoers file safely using:
+Edit the sudoers using:
 
 ```bash
 sudo visudo
 ```
 
-2. Add the following line at the end of the file (replace `<your-username>` with your actual username and adjust the path to where you cloned the repo):
+Add the following line at the end of the file, replacing your username and the path you cloned the repo to:
 
 ```
 <your-username> ALL=(ALL) NOPASSWD: /usr/bin/python3 /home/<your-username>/sunshine_virt_display/main.py *
 ```
 
-For example, if your username is `john` and you cloned to `/home/john/sunshine_virt_display`:
+For example, if your username is `alice` and you cloned to `/home/alice/sunshine_virt_display`:
 
 ```
-john ALL=(ALL) NOPASSWD: /usr/bin/python3 /home/john/sunshine_virt_display/main.py *
+alice ALL=(ALL) NOPASSWD: /usr/bin/python3 /home/alice/sunshine_virt_display/main.py *
 ```
 
-3. Save and exit (Ctrl+X, then Y, then Enter in nano, or `:wq` in vim)
-
-This configuration allows only this specific Python script to run with sudo privileges without requiring a password, which is more secure than storing passwords in plaintext.
+Save and exit.
 
 ### Configure Sunshine
 
