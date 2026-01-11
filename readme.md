@@ -7,14 +7,49 @@ It automatically manages display connections by overriding EDID information and 
 
 ⚠️ Its is recommended to enable ssh in case something goes wrong and you get stuck with a disabled display. You can always run `virt_display.sh --disconnect` to turn on your old display.
 
+### Installation
 
-Clone the repo
+Clone the repo and checkout the latest stable release:
 
 ```bash
 git clone https://github.com/frostplexx/sunshine_virt_display
+cd sunshine_virt_display
+git checkout v1.0.0
 ```
 
-Modify `virt_display.sh` and add your sudo password at the top. Also make sure that the file is executable by running `chmod +x virt_display.sh`.
+Make the script executable:
+
+```bash
+chmod +x virt_display.sh
+```
+
+### Configure Passwordless Sudo (Secure Method)
+
+To avoid storing your sudo password in plaintext, configure passwordless sudo for this specific script:
+
+1. Edit the sudoers file safely using:
+
+```bash
+sudo visudo
+```
+
+2. Add the following line at the end of the file (replace `<your-username>` with your actual username and adjust the path to where you cloned the repo):
+
+```
+<your-username> ALL=(ALL) NOPASSWD: /usr/bin/python3 /home/<your-username>/sunshine_virt_display/main.py *
+```
+
+For example, if your username is `john` and you cloned to `/home/john/sunshine_virt_display`:
+
+```
+john ALL=(ALL) NOPASSWD: /usr/bin/python3 /home/john/sunshine_virt_display/main.py *
+```
+
+3. Save and exit (Ctrl+X, then Y, then Enter in nano, or `:wq` in vim)
+
+This configuration allows only this specific Python script to run with sudo privileges without requiring a password, which is more secure than storing passwords in plaintext.
+
+### Configure Sunshine
 
 Configure Sunshine to run these commands when clients connect/disconnect in the "General" tab:
 
