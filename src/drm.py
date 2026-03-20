@@ -569,6 +569,95 @@ def _with_drm_master(card_path, callback):
         os.close(stolen_fd)
 
 
+def release_crtc(card_name, port):
+    """
+    Release the CRTC from a connector by disabling its display pipeline.
+    This is needed on disconnect so the CRTC becomes available for other connectors.
+    Returns True if CRTC was released (or wasn't assigned).
+    """
+    libdrm = _load_libdrm()
+    if not libdrm:
+        print("    Could not load libdrm")
+        return False
+
+    drm_type, type_id = _sysfs_port_to_drm_name(port)
+    if not drm_type:
+        print(f"    Could not parse port name: {port}")
+        return False
+
+    card_path = f"/dev/dri/{card_name}"
+
+    try:
+        probe_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
+    except OSError as e:
+        print(f"    Could not open {card_path}: {e}")
+        return False
+
+    try:
+        res = libdrm.drmModeGetResources(probe_fd)
+        if not res:
+            print("    drmModeGetResources failed")
+            return False
+
+        try:
+            conn_p = _find_connector(libdrm, probe_fd, res, drm_type, type_id)
+            if not conn_p:
+                print(f"    Connector {drm_type}-{type_id} not found")
+                return False
+
+            try:
+                conn = conn_p.contents
+                if not conn.encoder_id:
+                    print(f"    Connector {port} has no encoder, nothing to release")
+                    return True
+
+                enc_p = libdrm.drmModeGetEncoder(probe_fd, conn.encoder_id)
+                if not enc_p:
+                    print(f"    Could not get encoder {conn.encoder_id}")
+                    return False
+
+                crtc_id = enc_p.contents.crtc_id
+                libdrm.drmModeFreeEncoder(enc_p)
+
+                if not crtc_id:
+                    print(f"    Connector {port} has no CRTC, nothing to release")
+                    return True
+            finally:
+                libdrm.drmModeFreeConnector(conn_p)
+        finally:
+            libdrm.drmModeFreeResources(res)
+    finally:
+        os.close(probe_fd)
+
+    print(f"    Releasing CRTC {crtc_id} from {port}")
+
+    def do_release(master_fd):
+        # Disable the CRTC by setting it with no connectors and no fb
+        ret = libdrm.drmModeSetCrtc(
+            master_fd,
+            crtc_id,
+            0,       # fb_id = 0 (no framebuffer)
+            0, 0,    # x, y
+            None,    # no connectors
+            0,       # connector count = 0
+            None,    # no mode
+        )
+        if ret == 0:
+            print(f"    CRTC {crtc_id} released successfully")
+            return True
+        else:
+            errno_val = ctypes.get_errno()
+            print(f"    drmModeSetCrtc(release) failed (ret={ret}, errno={errno_val}: "
+                  f"{os.strerror(errno_val) if errno_val else 'unknown'})")
+            return False
+
+    try:
+        return _with_drm_master(card_path, do_release)
+    except Exception as e:
+        print(f"    Failed to release CRTC: {e}")
+        return False
+
+
 def force_crtc_assignment(card_name, port):
     """
     Force a CRTC onto a connected connector that has no CRTC assigned.

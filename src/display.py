@@ -10,6 +10,7 @@ from src.drm import (
     get_card_name_from_device,
     get_connected_displays,
     get_drm_devices,
+    release_crtc,
     run_command,
     wait_for_output_ready,
 )
@@ -186,8 +187,14 @@ def disconnect() -> bool:
     print(f"  Virtual display: {card_name}-{virtual_port}")
     print(f"  Previous displays: {previous_displays if previous_displays else 'None'}")
 
-    # Step 1: Turn off virtual display
-    print(f"\nStep 1: Turning off virtual display ({virtual_port})...")
+    # Step 1: Release CRTC from virtual display
+    # On AMD, sysfs 'echo off' doesn't release the CRTC — it stays bound
+    # with an active framebuffer, blocking the compositor from using it.
+    print(f"\nStep 1: Releasing CRTC from virtual display ({virtual_port})...")
+    release_crtc(card_name, virtual_port)
+
+    # Step 2: Turn off virtual display
+    print(f"\nStep 2: Turning off virtual display ({virtual_port})...")
     status_path = f"/sys/class/drm/{card_name}-{virtual_port}/status"
     cmd = f"sh -c 'echo off > {status_path}'"
     result = run_command(cmd)
@@ -197,8 +204,8 @@ def disconnect() -> bool:
     else:
         print(f"  ✓ Virtual display turned off")
 
-    # Step 2: Turn on previously connected displays
-    print("\nStep 2: Turning on previous displays...")
+    # Step 3: Turn on previously connected displays
+    print("\nStep 3: Turning on previous displays...")
     for display in previous_displays:
         if display:
             status_path = f"/sys/class/drm/{card_name}-{display}/status"
@@ -206,9 +213,9 @@ def disconnect() -> bool:
             run_command(cmd)
             print(f"  ✓ Turned on {display}")
 
-    # Step 3: Force CRTC assignment for restored displays
+    # Step 4: Force CRTC assignment for restored displays
     # On AMD, sysfs hotplug alone doesn't assign CRTCs
-    print("\nStep 3: Forcing CRTC assignment for restored displays...")
+    print("\nStep 4: Forcing CRTC assignment for restored displays...")
     for display in previous_displays:
         if display:
             force_crtc_assignment(card_name, display)
