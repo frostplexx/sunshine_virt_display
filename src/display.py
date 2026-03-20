@@ -206,6 +206,13 @@ def disconnect() -> bool:
             run_command(cmd)
             print(f"  ✓ Turned on {display}")
 
+    # Step 3: Force CRTC assignment for restored displays
+    # On AMD, sysfs hotplug alone doesn't assign CRTCs
+    print("\nStep 3: Forcing CRTC assignment for restored displays...")
+    for display in previous_displays:
+        if display:
+            force_crtc_assignment(card_name, display)
+
     state_file.unlink()
 
     print("\n✓ Virtual display disconnected!")
