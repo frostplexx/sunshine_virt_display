@@ -268,134 +268,6 @@ def section_kms_connectors():
 
 
 # ---------------------------------------------------------------------------
-# Section 3 – Wayland output view (what KWin sees)
-# ---------------------------------------------------------------------------
-
-def _wayland_env():
-    """Return env dict suitable for running a Wayland client as the desktop user."""
-    uid = None
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit():
-            continue
-        try:
-            exe = (proc / "exe").resolve()
-            if "kwin_wayland" not in str(exe):
-                continue
-            env_raw = (proc / "environ").read_bytes().split(b"\x00")
-            env = {}
-            for item in env_raw:
-                if b"=" in item:
-                    k, _, v = item.partition(b"=")
-                    env[k.decode(errors="replace")] = v.decode(errors="replace")
-            if "WAYLAND_DISPLAY" in env:
-                return env
-        except Exception:
-            continue
-    return {}
-
-
-def section_wayland_outputs():
-    hdr("3. Wayland output view  (what KWin / the compositor sees)")
-
-    env = _wayland_env()
-    wayland_display = env.get("WAYLAND_DISPLAY", os.environ.get("WAYLAND_DISPLAY", ""))
-    xdg_runtime    = env.get("XDG_RUNTIME_DIR", os.environ.get("XDG_RUNTIME_DIR", ""))
-
-    if not wayland_display:
-        warn("Could not determine WAYLAND_DISPLAY – skipping Wayland section")
-        return
-
-    sock = Path(xdg_runtime) / wayland_display
-    if not sock.exists():
-        warn(f"Wayland socket {sock} not found")
-        return
-
-    info(f"WAYLAND_DISPLAY={wayland_display}  XDG_RUNTIME_DIR={xdg_runtime}")
-
-    run_env = {**os.environ, "WAYLAND_DISPLAY": wayland_display, "XDG_RUNTIME_DIR": xdg_runtime}
-    if "HOME" in env:
-        run_env["HOME"] = env["HOME"]
-
-    try:
-        result = subprocess.run(
-            ["wayland-info"],
-            env=run_env,
-            capture_output=True, text=True, timeout=5
-        )
-        output = result.stdout
-    except FileNotFoundError:
-        warn("wayland-info not installed – skipping Wayland output detail")
-        return
-    except Exception as e:
-        warn(f"wayland-info failed: {e}")
-        return
-
-    # Parse wl_output and zxdg_output_manager blocks
-    import re
-    outputs = []
-    current = {}
-    for line in output.splitlines():
-        if "interface: 'wl_output'" in line:
-            if current:
-                outputs.append(current)
-            current = {}
-        if current is not None:
-            if "name:" in line and "description" not in line:
-                m = re.search(r"name: '?([^',]+)'?", line)
-                if m: current["name"] = m.group(1).strip()
-            if "description:" in line:
-                m = re.search(r"description: '?([^']+)'?", line)
-                if m: current["description"] = m.group(1).strip()
-            if "physical_width:" in line:
-                m = re.search(r"physical_width:\s*(\d+)\s*mm.*physical_height:\s*(\d+)\s*mm", line)
-                if m: current["physical"] = f"{m.group(1)}x{m.group(2)}mm"
-            if "width:" in line and "px" in line:
-                m = re.search(r"width:\s*(\d+)\s*px.*height:\s*(\d+)\s*px", line)
-                if m: current["mode"] = f"{m.group(1)}x{m.group(2)}"
-            if "refresh:" in line:
-                m = re.search(r"refresh:\s*([\d.]+)\s*Hz", line)
-                if m: current["refresh"] = m.group(1)
-            if "scale:" in line:
-                m = re.search(r"scale:\s*([\d.]+)", line)
-                if m: current["scale"] = m.group(1)
-        if "logical_width:" in line:
-            m = re.search(r"logical_width:\s*(\d+).*logical_height:\s*(\d+)", line)
-            if m and outputs:
-                outputs[-1]["logical"] = f"{m.group(1)}x{m.group(2)}"
-            elif m and current:
-                current["logical"] = f"{m.group(1)}x{m.group(2)}"
-
-    if current:
-        outputs.append(current)
-
-    # Wayland protocols
-    has_wlr_dmabuf   = "wlr-export-dmabuf" in output or "zwlr_export_dmabuf" in output
-    has_screencopy   = "zwlr_screencopy_manager" in output
-    has_xdg_output   = "zxdg_output_manager" in output
-
-    if outputs:
-        for o in outputs:
-            name = o.get("name", "?")
-            desc = o.get("description", "")
-            mode = o.get("mode", "?")
-            ref  = o.get("refresh", "?")
-            phys = o.get("physical", "?")
-            scale= o.get("scale", "?")
-            logi = o.get("logical", "")
-            logi_str = f"  logical={logi}" if logi else ""
-            print(f"  {BOLD}{name}{RESET}  {desc}")
-            print(f"    mode={mode}@{ref}Hz  physical={phys}  scale={scale}{logi_str}")
-    else:
-        warn("No wl_output entries parsed from wayland-info")
-
-    print()
-    proto_status = lambda name, present: ok(f"{name}: available") if present else warn(f"{name}: not available")
-    proto_status("wlr-export-dmabuf", has_wlr_dmabuf)
-    proto_status("zwlr_screencopy_manager", has_screencopy)
-    proto_status("zxdg_output_manager", has_xdg_output)
-
-
-# ---------------------------------------------------------------------------
 # Section 4 – Sunshine log tail
 # ---------------------------------------------------------------------------
 
@@ -430,7 +302,7 @@ def section_sunshine_log():
 def section_config():
     hdr("5. Configuration snapshot")
 
-    script_dir = Path(__file__).parent
+    script_dir = Path(__file__).parent.parent
 
     state = script_dir / "virt_display.state"
     if state.exists():
@@ -476,7 +348,6 @@ def snapshot():
 
     section_sysfs_connectors()
     section_kms_connectors()
-    section_wayland_outputs()
     section_sunshine_log()
     section_config()
     print()
