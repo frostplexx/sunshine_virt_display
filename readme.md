@@ -106,8 +106,9 @@ git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 - Everything is small when a device with retina display connects
 - Disconnecting is sometimes slow and janky but will fix itself after ~15s
 - On MacBooks with notches the notch will be ignored and will cut into content
-- Using the "Native" or "Native (Excluding Notch)" setting on macos will create a virtual monitor with either 99Hz or 103Hz refresh rate regardless of what you choose in Moonlight settings
+- Very high resolutions and refresh rates won't work due to limitations in EDID 1.4.
 
 ## Tested On
 
 - Bazzite
+- CachyOS

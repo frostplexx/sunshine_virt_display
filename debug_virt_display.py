@@ -256,6 +256,7 @@ def section_kms_connectors():
 
             phys = f"{c.mmWidth}x{c.mmHeight}mm" if (c.mmWidth or c.mmHeight) else "0x0mm"
 
+
             print(f"\n      [{conn_id}] {BOLD}{conn_name:<18}{RESET}  "
                   f"drm_status={status_str:<14} encoder={enc_id}  crtc={crtc_id}  "
                   f"modes={c.count_modes}  physical={phys}")

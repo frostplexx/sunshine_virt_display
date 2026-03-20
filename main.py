@@ -9,6 +9,7 @@ Usage: echo "password" | sudo python3 main.py --connect --width 1920 --height 10
 
 import os
 import sys
+import time
 from pathlib import Path
 
 # Get the directory where this script is located and add it to Python path
@@ -140,6 +141,35 @@ def get_card_name_from_device(drm_device_path):
     return "card1"
 
 
+def wait_for_output_ready(card_name, port, width, height, timeout=4.0):
+    """
+    Poll sysfs until the DRM connector is fully configured.
+    Works across all DEs since it only uses kernel sysfs interfaces.
+    """
+    expected_res = f"{width}x{height}"
+    sysfs_base = Path(f"/sys/class/drm/{card_name}-{port}")
+    poll_interval = 0.1
+    max_polls = int(timeout / poll_interval)
+
+    for i in range(max_polls):
+        try:
+            status = (sysfs_base / "status").read_text().strip()
+            enabled = (sysfs_base / "enabled").read_text().strip()
+            modes_file = sysfs_base / "modes"
+            mode = modes_file.read_text().strip().split("\n")[0] if modes_file.exists() else ""
+
+            if status == "connected" and enabled == "enabled" and expected_res in mode:
+                # Small grace period for compositor to finish after kernel reports ready
+                time.sleep(0.5)
+                return True, mode
+        except (OSError, IOError):
+            pass
+
+        time.sleep(poll_interval)
+
+    return False, ""
+
+
 def connect_virtual_display(width, height, refresh_rate):
     """
     Connect a virtual display:
@@ -148,6 +178,7 @@ def connect_virtual_display(width, height, refresh_rate):
     3. Override EDID
     4. Turn off connected displays
     5. Turn on virtual display
+    6. Wait for output to be ready
     """
     print(f"Connecting virtual display: {width}x{height}@{refresh_rate}Hz")
 
@@ -270,6 +301,15 @@ def connect_virtual_display(width, height, refresh_rate):
         return False
 
     print(f"  ✓ Virtual display enabled on {empty_port}")
+
+    # Step 7: Wait for compositor to fully configure the output
+    print(f"\nStep 7: Waiting for output to be ready...")
+    ready, mode = wait_for_output_ready(card_name, empty_port, width, height)
+
+    if ready:
+        print(f"  ✓ Output ready ({mode})")
+    else:
+        print(f"  ⚠ Timed out waiting for output, proceeding anyway")
 
     # Save state for disconnect
     state_file = SCRIPT_DIR / "virt_display.state"
