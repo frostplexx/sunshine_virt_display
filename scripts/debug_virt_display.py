@@ -1,47 +1,38 @@
 #!/usr/bin/env python3
 """
-debug_virt_display.py - Snapshot the full display/capture state relevant to
-sunshine_virt_display, with emphasis on what Sunshine's KMS monitor list sees.
+debug_virt_display.py - Snapshot the display/capture state relevant to
+sunshine_virt_display.
 
 Run as root (sudo python3 debug_virt_display.py) for full DRM access.
-Run without sudo for the Wayland-side view only.
+Run without sudo for the sysfs-only view.
 
 Usage:
-    sudo python3 debug_virt_display.py            # full snapshot
-    sudo python3 debug_virt_display.py --watch     # re-print every 2s (useful while connecting)
+    sudo python3 scripts/debug_virt_display.py
 """
 
-import argparse
 import ctypes
 import ctypes.util
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers  (plain text only — no ANSI escapes, safe for GitHub issues)
 # ---------------------------------------------------------------------------
 
-RESET  = "\033[0m"
-BOLD   = "\033[1m"
-RED    = "\033[31m"
-YELLOW = "\033[33m"
-GREEN  = "\033[32m"
-CYAN   = "\033[36m"
-
 def hdr(title):
-    width = 72
-    print(f"\n{BOLD}{CYAN}{'─' * width}{RESET}")
-    print(f"{BOLD}{CYAN}  {title}{RESET}")
-    print(f"{BOLD}{CYAN}{'─' * width}{RESET}")
+    print(f"\n{'=' * 72}")
+    print(f"  {title}")
+    print(f"{'=' * 72}")
 
-def ok(msg):   print(f"  {GREEN}✓{RESET}  {msg}")
-def warn(msg): print(f"  {YELLOW}⚠{RESET}  {msg}")
-def err(msg):  print(f"  {RED}✗{RESET}  {msg}")
-def info(msg): print(f"     {msg}")
+
+def ok(msg):   print(f"  [OK]   {msg}")
+def warn(msg): print(f"  [WARN] {msg}")
+def err(msg):  print(f"  [ERR]  {msg}")
+def info(msg): print(f"         {msg}")
+
 
 def run(cmd, timeout=5):
     try:
@@ -52,7 +43,7 @@ def run(cmd, timeout=5):
 
 
 # ---------------------------------------------------------------------------
-# Section 1 – sysfs connector status
+# Section 1 — sysfs connector status
 # ---------------------------------------------------------------------------
 
 def section_sysfs_connectors():
@@ -71,18 +62,17 @@ def section_sysfs_connectors():
         if not status_f.exists():
             continue
 
-        status  = status_f.read_text().strip()
+        status = status_f.read_text().strip()
         enabled = enabled_f.read_text().strip() if enabled_f.exists() else "?"
 
-        color = GREEN if status == "connected" else ""
-        print(f"  {color}{entry.name:<30}{RESET}  status={status:<14} enabled={enabled}")
+        marker = " *" if status == "connected" else "  "
+        print(f"  {marker} {entry.name:<30}  status={status:<14} enabled={enabled}")
 
 
 # ---------------------------------------------------------------------------
-# Section 2 – libdrm connector + CRTC + plane view  (mirrors Sunshine's KMS scan)
+# Section 2 — KMS connector / encoder / CRTC state (libdrm)
 # ---------------------------------------------------------------------------
 
-# Minimal libdrm bindings via ctypes
 class _DrmModeRes(ctypes.Structure):
     _fields_ = [
         ("count_fbs",        ctypes.c_int),
@@ -101,21 +91,21 @@ class _DrmModeRes(ctypes.Structure):
 
 class _DrmModeConnector(ctypes.Structure):
     _fields_ = [
-        ("connector_id",   ctypes.c_uint32),
-        ("encoder_id",     ctypes.c_uint32),
-        ("connector_type", ctypes.c_uint32),
+        ("connector_id",      ctypes.c_uint32),
+        ("encoder_id",        ctypes.c_uint32),
+        ("connector_type",    ctypes.c_uint32),
         ("connector_type_id", ctypes.c_uint32),
-        ("connection",     ctypes.c_uint32),   # 1=connected 2=disconnected 3=unknown
-        ("mmWidth",        ctypes.c_uint32),
-        ("mmHeight",       ctypes.c_uint32),
-        ("subpixel",       ctypes.c_uint32),
-        ("count_modes",    ctypes.c_int),
-        ("modes",          ctypes.c_void_p),
-        ("count_props",    ctypes.c_int),
-        ("props",          ctypes.POINTER(ctypes.c_uint32)),
-        ("prop_values",    ctypes.POINTER(ctypes.c_uint64)),
-        ("count_encoders", ctypes.c_int),
-        ("encoders",       ctypes.POINTER(ctypes.c_uint32)),
+        ("connection",        ctypes.c_uint32),
+        ("mmWidth",           ctypes.c_uint32),
+        ("mmHeight",          ctypes.c_uint32),
+        ("subpixel",          ctypes.c_uint32),
+        ("count_modes",       ctypes.c_int),
+        ("modes",             ctypes.c_void_p),
+        ("count_props",       ctypes.c_int),
+        ("props",             ctypes.POINTER(ctypes.c_uint32)),
+        ("prop_values",       ctypes.POINTER(ctypes.c_uint64)),
+        ("count_encoders",    ctypes.c_int),
+        ("encoders",          ctypes.POINTER(ctypes.c_uint32)),
     ]
 
 class _DrmModeEncoder(ctypes.Structure):
@@ -129,16 +119,15 @@ class _DrmModeEncoder(ctypes.Structure):
 
 class _DrmModeCrtc(ctypes.Structure):
     _fields_ = [
-        ("crtc_id",      ctypes.c_uint32),
-        ("buffer_id",    ctypes.c_uint32),
-        ("x",            ctypes.c_uint32),
-        ("y",            ctypes.c_uint32),
-        ("width",        ctypes.c_uint32),
-        ("height",       ctypes.c_uint32),
-        ("mode_valid",   ctypes.c_int),
-        # mode_info is 292 bytes – we don't need to parse it, just pad
-        ("_mode_info",   ctypes.c_uint8 * 292),
-        ("gamma_size",   ctypes.c_int),
+        ("crtc_id",    ctypes.c_uint32),
+        ("buffer_id",  ctypes.c_uint32),
+        ("x",          ctypes.c_uint32),
+        ("y",          ctypes.c_uint32),
+        ("width",      ctypes.c_uint32),
+        ("height",     ctypes.c_uint32),
+        ("mode_valid", ctypes.c_int),
+        ("_mode_info", ctypes.c_uint8 * 292),
+        ("gamma_size", ctypes.c_int),
     ]
 
 CONNECTOR_TYPE_NAMES = {
@@ -157,8 +146,6 @@ def _load_libdrm():
         return None
     try:
         lib = ctypes.CDLL(name)
-        lib.drmOpen.restype = ctypes.c_int
-        lib.drmClose.restype = ctypes.c_int
         lib.drmModeGetResources.restype = ctypes.POINTER(_DrmModeRes)
         lib.drmModeFreeResources.restype = None
         lib.drmModeGetConnector.restype = ctypes.POINTER(_DrmModeConnector)
@@ -167,18 +154,17 @@ def _load_libdrm():
         lib.drmModeFreeEncoder.restype = None
         lib.drmModeGetCrtc.restype = ctypes.POINTER(_DrmModeCrtc)
         lib.drmModeFreeCrtc.restype = None
-        lib.drmGetVersion.restype = ctypes.c_void_p
         return lib
     except Exception:
         return None
 
 
 def section_kms_connectors():
-    hdr("2. KMS connector/encoder/CRTC state  (libdrm)")
+    hdr("2. KMS connector / encoder / CRTC state  (libdrm)")
 
     libdrm = _load_libdrm()
     if not libdrm:
-        warn("libdrm not found – skipping KMS section")
+        warn("libdrm not found -- skipping KMS section")
         return
 
     dri = Path("/dev/dri")
@@ -192,15 +178,15 @@ def section_kms_connectors():
         return
 
     for card_path in cards:
-        print(f"\n  {BOLD}{card_path}{RESET}")
+        print(f"\n  {card_path}")
 
         try:
             fd = os.open(str(card_path), os.O_RDWR | os.O_CLOEXEC)
         except PermissionError:
-            warn(f"    Permission denied – run as root for full KMS view")
+            warn("  Permission denied -- run as root for full KMS view")
             continue
         except Exception as e:
-            err(f"    Could not open: {e}")
+            err(f"  Could not open: {e}")
             continue
 
         # Driver name
@@ -210,7 +196,7 @@ def section_kms_connectors():
 
         res = libdrm.drmModeGetResources(fd)
         if not res:
-            warn("    drmModeGetResources returned NULL (no KMS support or no permission)")
+            warn("    drmModeGetResources returned NULL")
             os.close(fd)
             continue
 
@@ -218,19 +204,20 @@ def section_kms_connectors():
 
         # CRTCs
         print(f"\n    CRTCs ({r.count_crtcs}):")
-        crtc_ids = set()
         for i in range(r.count_crtcs):
             cid = r.crtcs[i]
-            crtc_ids.add(cid)
             crtc_p = libdrm.drmModeGetCrtc(fd, cid)
             if crtc_p:
                 c = crtc_p.contents
                 active = c.buffer_id != 0
-                status_str = f"{GREEN}ACTIVE  fb={c.buffer_id} {c.width}x{c.height}{RESET}" if active else f"{YELLOW}inactive fb=0{RESET}"
-                print(f"      CRTC {cid}: {status_str}")
+                if active:
+                    status_str = f"ACTIVE  fb={c.buffer_id} {c.width}x{c.height}"
+                else:
+                    status_str = "inactive fb=0"
+                print(f"      [{i}] CRTC {cid}: {status_str}")
                 libdrm.drmModeFreeCrtc(crtc_p)
             else:
-                print(f"      CRTC {cid}: (could not query)")
+                print(f"      [{i}] CRTC {cid}: (could not query)")
 
         # Connectors
         print(f"\n    Connectors ({r.count_connectors}):")
@@ -245,7 +232,7 @@ def section_kms_connectors():
             conn_name = f"{type_name}-{c.connector_type_id}"
             status_str = CONN_STATUS.get(c.connection, "unknown")
 
-            # Encoder → CRTC chain
+            # Encoder -> CRTC chain
             crtc_id = 0
             enc_id = c.encoder_id
             if enc_id:
@@ -254,12 +241,25 @@ def section_kms_connectors():
                     crtc_id = enc_p.contents.crtc_id
                     libdrm.drmModeFreeEncoder(enc_p)
 
+            # Gather possible_crtcs from all encoders
+            all_possible = 0
+            for ei in range(c.count_encoders):
+                enc_p = libdrm.drmModeGetEncoder(fd, c.encoders[ei])
+                if enc_p:
+                    all_possible |= enc_p.contents.possible_crtcs
+                    libdrm.drmModeFreeEncoder(enc_p)
+
+            possible_list = [str(idx) for idx in range(r.count_crtcs) if all_possible & (1 << idx)]
+            possible_str = f"[{','.join(possible_list)}]" if possible_list else "[]"
+
             phys = f"{c.mmWidth}x{c.mmHeight}mm" if (c.mmWidth or c.mmHeight) else "0x0mm"
 
+            marker = "*" if c.connection == 1 else " "
 
-            print(f"\n      [{conn_id}] {BOLD}{conn_name:<18}{RESET}  "
+            print(f"\n      {marker} [{conn_id}] {conn_name:<18}  "
                   f"drm_status={status_str:<14} encoder={enc_id}  crtc={crtc_id}  "
                   f"modes={c.count_modes}  physical={phys}")
+            print(f"               possible_crtcs={possible_str}")
 
             libdrm.drmModeFreeConnector(conn_p)
 
@@ -268,15 +268,15 @@ def section_kms_connectors():
 
 
 # ---------------------------------------------------------------------------
-# Section 4 – Sunshine log tail
+# Section 3 — Sunshine log tail
 # ---------------------------------------------------------------------------
 
 def section_sunshine_log():
-    hdr("4. Sunshine recent log  (last 40 relevant lines)")
+    hdr("3. Sunshine recent log  (last 40 relevant lines)")
 
     out, _ = run("journalctl --user -u sunshine -n 200 --no-pager 2>/dev/null")
     if not out:
-        warn("Could not read Sunshine journal – trying /tmp/virt_display.log only")
+        warn("Could not read Sunshine journal -- trying /tmp/virt_display.log only")
     else:
         keywords = ("resolution", "logical", "kms monitor", "found monitor",
                     "screencasting", "found interface", "missing wayland",
@@ -289,24 +289,24 @@ def section_sunshine_log():
 
     vd_log = Path("/tmp/virt_display.log")
     if vd_log.exists():
-        print(f"\n  {BOLD}virt_display.log (last 20 lines):{RESET}")
+        print(f"\n  virt_display.log (last 20 lines):")
         lines = vd_log.read_text().splitlines()
         for l in lines[-20:]:
             print(f"  {l}")
 
 
 # ---------------------------------------------------------------------------
-# Section 5 – State file + config
+# Section 4 — State file + config
 # ---------------------------------------------------------------------------
 
 def section_config():
-    hdr("5. Configuration snapshot")
+    hdr("4. Configuration snapshot")
 
     script_dir = Path(__file__).parent.parent
 
     state = script_dir / "virt_display.state"
     if state.exists():
-        ok(f"virt_display.state exists:")
+        ok("virt_display.state exists:")
         for l in state.read_text().splitlines():
             info(l)
     else:
@@ -314,28 +314,38 @@ def section_config():
 
     sunshine_conf = Path.home() / ".config/sunshine/sunshine.conf"
     if sunshine_conf.exists():
-        print(f"\n  {BOLD}sunshine.conf:{RESET}")
+        print(f"\n  sunshine.conf:")
         for l in sunshine_conf.read_text().splitlines():
             info(l)
 
-    kwin_conf = Path.home() / ".config/kwinoutputconfig.json"
-    if kwin_conf.exists():
-        import json
-        try:
-            data = json.loads(kwin_conf.read_text())
-            outputs_section = next((s for s in data if s.get("name") == "outputs"), None)
-            if outputs_section:
-                print(f"\n  {BOLD}kwinoutputconfig.json — saved display scales:{RESET}")
-                for entry in outputs_section.get("data", []):
-                    conn  = entry.get("connectorName", "?")
-                    scale = entry.get("scale", "?")
-                    mode  = entry.get("mode", {})
-                    res   = f"{mode.get('width','?')}x{mode.get('height','?')}"
-                    eid   = entry.get("edidHash", "")[:8]
-                    color = GREEN if float(scale) == 1.0 else RED
-                    print(f"    {conn}  {res}  {color}scale={scale}{RESET}  edid={eid}…")
-        except Exception as e:
-            warn(f"Could not parse kwinoutputconfig.json: {e}")
+
+# ---------------------------------------------------------------------------
+# Section 5 — System info
+# ---------------------------------------------------------------------------
+
+def section_system_info():
+    hdr("5. System info")
+
+    kernel, _ = run("uname -r")
+    print(f"  Kernel: {kernel}")
+
+    gpu_out, _ = run("lspci -nn 2>/dev/null | grep -iE 'vga|3d|display'")
+    if gpu_out:
+        for line in gpu_out.splitlines():
+            print(f"  GPU: {line.strip()}")
+    else:
+        warn("Could not detect GPU via lspci")
+
+    for mod in ("amdgpu", "nvidia", "i915", "xe", "nouveau"):
+        ver, _ = run(f"modinfo {mod} 2>/dev/null | head -4")
+        if ver:
+            version_line = ""
+            for l in ver.splitlines():
+                if l.startswith("version:") or l.startswith("vermagic:"):
+                    version_line = l.split(":", 1)[1].strip()
+                    break
+            if version_line:
+                print(f"  {mod}: {version_line}")
 
 
 # ---------------------------------------------------------------------------
@@ -343,34 +353,17 @@ def section_config():
 # ---------------------------------------------------------------------------
 
 def snapshot():
-    print(f"\n{BOLD}sunshine_virt_display debug snapshot{RESET}  —  {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\nsunshine_virt_display debug snapshot  --  {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Running as: {'root' if os.geteuid() == 0 else 'user (run with sudo for full KMS detail)'}")
 
     section_sysfs_connectors()
     section_kms_connectors()
     section_sunshine_log()
     section_config()
+    section_system_info()
     print()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Debug sunshine_virt_display display/KMS state")
-    parser.add_argument("--watch", action="store_true",
-                        help="Repeat snapshot every 2 seconds (useful while connecting a client)")
-    args = parser.parse_args()
-
-    if args.watch:
-        try:
-            while True:
-                os.system("clear")
-                snapshot()
-                print(f"  {YELLOW}[ --watch mode: refreshing every 2s, Ctrl-C to stop ]{RESET}\n")
-                time.sleep(2)
-        except KeyboardInterrupt:
-            pass
-    else:
-        snapshot()
+    print("<!-- Paste this entire output into a GitHub issue for debugging -->")
 
 
 if __name__ == "__main__":
-    main()
+    snapshot()

@@ -432,10 +432,17 @@ def _find_compositor_pid_and_fd(card_path):
         except (OSError, PermissionError):
             continue
 
+    print(f"    Scanning for DRM master holder ({len(candidates)} candidate fds)")
+
     # Test each candidate — the real DRM master holder is the one where
     # DROP_MASTER succeeds on their duplicated fd.
     for pid, fd_num in candidates:
         try:
+            try:
+                comm = Path(f"/proc/{pid}/comm").read_text().strip()
+            except OSError:
+                comm = "?"
+
             pidfd = _pidfd_open(pid)
             try:
                 dup_fd = _pidfd_getfd(pidfd, fd_num)
@@ -446,12 +453,14 @@ def _find_compositor_pid_and_fd(card_path):
                 # It worked — restore master and return this candidate
                 fcntl.ioctl(dup_fd, DRM_IOCTL_SET_MASTER, 0)
                 os.close(dup_fd)
+                print(f"    Found DRM master: PID {pid} ({comm}) fd {fd_num}")
                 return pid, fd_num
             except OSError:
                 os.close(dup_fd)
         except OSError:
             continue
 
+    print("    No DRM master holder found")
     return None, None
 
 
@@ -493,11 +502,12 @@ def _with_drm_master(card_path, callback):
     drop/restore their master status.
     """
     # First try the simple path — maybe no compositor is running
+    print(f"    Attempting direct DRM master acquisition on {card_path}")
     our_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
     try:
         try:
             fcntl.ioctl(our_fd, DRM_IOCTL_SET_MASTER, 0)
-            # Simple path worked — no compositor holding master
+            print("    Direct SET_MASTER succeeded (no compositor holding master)")
             try:
                 return callback(our_fd)
             finally:
@@ -505,8 +515,8 @@ def _with_drm_master(card_path, callback):
                     fcntl.ioctl(our_fd, DRM_IOCTL_DROP_MASTER, 0)
                 except OSError:
                     pass
-        except OSError:
-            pass  # EBUSY — compositor holds master, use pidfd path
+        except OSError as e:
+            print(f"    Direct SET_MASTER failed: {e} -- using pidfd path")
     except Exception:
         os.close(our_fd)
         raise
@@ -529,13 +539,15 @@ def _with_drm_master(card_path, callback):
 
     try:
         # Drop master on the compositor's drm_file
+        print("    Dropping compositor's DRM master...")
         fcntl.ioctl(stolen_fd, DRM_IOCTL_DROP_MASTER, 0)
-        print(f"    Compositor master dropped, acquiring our own...")
+        print("    Compositor master dropped, acquiring our own...")
 
         # Now open our own fd and acquire master
         our_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
         try:
             fcntl.ioctl(our_fd, DRM_IOCTL_SET_MASTER, 0)
+            print("    DRM master acquired successfully")
             try:
                 return callback(our_fd)
             finally:
@@ -548,10 +560,12 @@ def _with_drm_master(card_path, callback):
             os.close(our_fd)
     finally:
         # Restore master to compositor
+        print("    Restoring DRM master to compositor...")
         try:
             fcntl.ioctl(stolen_fd, DRM_IOCTL_SET_MASTER, 0)
-        except OSError:
-            pass
+            print("    Compositor master restored")
+        except OSError as e:
+            print(f"    Warning: could not restore compositor master: {e}")
         os.close(stolen_fd)
 
 
@@ -613,6 +627,7 @@ def force_crtc_assignment(card_name, port):
         create.bpp = 32
         create.flags = 0
 
+        print(f"    Creating dumb buffer: {create.width}x{create.height} bpp=32")
         try:
             fcntl.ioctl(master_fd, DRM_IOCTL_MODE_CREATE_DUMB, create)
         except OSError as e:
@@ -633,7 +648,6 @@ def force_crtc_assignment(card_name, port):
             fcntl.ioctl(master_fd, DRM_IOCTL_MODE_ADDFB, fb)
         except OSError as e:
             print(f"    Failed to add framebuffer: {e}")
-            # Clean up dumb buffer
             destroy = _DrmModeDestroyDumb()
             destroy.handle = create.handle
             try:
@@ -641,9 +655,12 @@ def force_crtc_assignment(card_name, port):
             except OSError:
                 pass
             return False
+        print(f"    Framebuffer added: fb_id={fb.fb_id}")
 
         # Set CRTC with the real framebuffer
         conn_ids = (ctypes.c_uint32 * 1)(connector_id)
+        print(f"    Calling drmModeSetCrtc(crtc={crtc_id}, fb={fb.fb_id}, "
+              f"conn={connector_id}, mode={mode_copy.hdisplay}x{mode_copy.vdisplay})")
         ret = libdrm.drmModeSetCrtc(
             master_fd,
             crtc_id,
@@ -658,7 +675,9 @@ def force_crtc_assignment(card_name, port):
             print(f"    CRTC {crtc_id} assigned successfully (fb={fb.fb_id})")
             return True
         else:
-            print(f"    drmModeSetCrtc failed (ret={ret})")
+            errno_val = ctypes.get_errno()
+            print(f"    drmModeSetCrtc failed (ret={ret}, errno={errno_val}: "
+                  f"{os.strerror(errno_val) if errno_val else 'unknown'})")
             # Clean up on failure
             try:
                 fcntl.ioctl(master_fd, DRM_IOCTL_MODE_RMFB, ctypes.c_uint32(fb.fb_id))
