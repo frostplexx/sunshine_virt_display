@@ -530,7 +530,7 @@ def _with_drm_master(card_path, callback):
     try:
         # Drop master on the compositor's drm_file
         fcntl.ioctl(stolen_fd, DRM_IOCTL_DROP_MASTER, 0)
-        print(f"    Compositor master dropped, acquiring our own..."
+        print(f"    Compositor master dropped, acquiring our own...")
 
         # Now open our own fd and acquire master
         our_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
@@ -618,7 +618,7 @@ def force_crtc_assignment(card_name, port):
         except OSError as e:
             print(f"    Failed to create dumb buffer: {e}")
             return False
-        print(f"    Dumb buffer created: handle={create.handle} pitch={create.pitch} size={create.size}"
+        print(f"    Dumb buffer created: handle={create.handle} pitch={create.pitch} size={create.size}")
 
         # Add framebuffer
         fb = _DrmModeFbCmd()
