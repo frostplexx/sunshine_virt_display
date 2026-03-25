@@ -50,14 +50,24 @@ def _clear_kwin_output_config(port: str) -> None:
 
     try:
         data = json.loads(config_path.read_text())
-        outputs = data.get("outputs", [])
-        original_count = len(outputs)
-        data["outputs"] = [o for o in outputs if o.get("name") != port]
-        if len(data["outputs"]) < original_count:
-            config_path.write_text(json.dumps(data, indent=2))
-            print(f"  ✓ Cleared KWin saved config for {port} (was overriding EDID resolution)")
+        # kwinoutputconfig.json may be {"outputs": [...]} or a bare [...]
+        if isinstance(data, list):
+            outputs = data
+            filtered = [o for o in outputs if o.get("name") != port]
+            if len(filtered) < len(outputs):
+                config_path.write_text(json.dumps(filtered, indent=2))
+                print(f"  ✓ Cleared KWin saved config for {port} (was overriding EDID resolution)")
+            else:
+                print(f"  ✓ No stale KWin config for {port}")
         else:
-            print(f"  ✓ No stale KWin config for {port}")
+            outputs = data.get("outputs", [])
+            original_count = len(outputs)
+            data["outputs"] = [o for o in outputs if o.get("name") != port]
+            if len(data["outputs"]) < original_count:
+                config_path.write_text(json.dumps(data, indent=2))
+                print(f"  ✓ Cleared KWin saved config for {port} (was overriding EDID resolution)")
+            else:
+                print(f"  ✓ No stale KWin config for {port}")
     except Exception as e:
         print(f"  Warning: Could not update kwinoutputconfig.json: {e}")
 
@@ -162,20 +172,18 @@ def connect(width: int, height: int, refresh_rate: int) -> bool:
 
     print(f"  ✓ EDID override applied")
 
-    # Step 5: Turn off all connected displays
+    # Step 5: Turn off all connected displays and explicitly release their CRTCs.
+    # On AMD, echo off > status marks the connector disconnected in sysfs but
+    # the compositor keeps the CRTC active.  Without an explicit CRTC release
+    # the compositor continues rendering to the old displays, Sunshine sees
+    # multiple monitors, and uses the wrong one.
     print("\nStep 5: Turning off connected displays...")
     for display in connected_displays:
+        release_crtc(card_name, display)
         status_path = f"/sys/class/drm/{card_name}-{display}/status"
         cmd = f"sh -c 'echo off > {status_path}'"
         run_command(cmd)
         print(f"  ✓ Turned off {display}")
-
-    # Give the compositor time to process the disconnect events and release its
-    # CRTC assignments before the virtual connector appears.  Without this
-    # delay KWin can reuse existing CRTC state and apply the wrong resolution.
-    if connected_displays:
-        print("  Waiting for compositor to release CRTCs...")
-        time.sleep(1.0)
 
     # Step 6: Clear any stale KWin output config, then turn on virtual display
     print(f"\nStep 6: Preparing virtual display ({empty_port})...")
