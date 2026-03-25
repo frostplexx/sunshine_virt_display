@@ -110,27 +110,64 @@ def get_card_name_from_device(drm_device_path):
     return "card1"
 
 
-def wait_for_output_ready(card_name, port, width, height, timeout=4.0):
+def _check_crtc_active(libdrm, card_path, drm_type, type_id):
     """
-    Poll sysfs until the DRM connector is fully configured.
+    Return True if the connector has an active CRTC via the encoder chain.
+    This is the ground-truth check that the compositor has finished modesetting.
+    """
+    try:
+        fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        res = libdrm.drmModeGetResources(fd)
+        if not res:
+            return False
+        try:
+            conn_p = _find_connector(libdrm, fd, res, drm_type, type_id)
+            if not conn_p:
+                return False
+            try:
+                conn = conn_p.contents
+                if not conn.encoder_id:
+                    return False
+                enc_p = libdrm.drmModeGetEncoder(fd, conn.encoder_id)
+                if not enc_p:
+                    return False
+                crtc_id = enc_p.contents.crtc_id
+                libdrm.drmModeFreeEncoder(enc_p)
+                return crtc_id != 0
+            finally:
+                libdrm.drmModeFreeConnector(conn_p)
+        finally:
+            libdrm.drmModeFreeResources(res)
+    finally:
+        os.close(fd)
+
+
+def wait_for_output_ready(card_name, port, width, height, timeout=10.0):
+    """
+    Poll until the DRM connector is sysfs-connected AND has an active CRTC
+    assigned by the compositor (verified via libdrm encoder chain).
     Returns (ready, mode_string).
     """
-    expected_res = f"{width}x{height}"
     sysfs_base = Path(f"/sys/class/drm/{card_name}-{port}")
-    poll_interval = 0.1
+    drm_type, type_id = _sysfs_port_to_drm_name(port)
+    card_path = f"/dev/dri/{card_name}"
+    libdrm = _load_libdrm()
+    poll_interval = 0.2
     max_polls = int(timeout / poll_interval)
 
     for _ in range(max_polls):
         try:
             status = (sysfs_base / "status").read_text().strip()
-            enabled = (sysfs_base / "enabled").read_text().strip()
-            modes_file = sysfs_base / "modes"
-            mode = modes_file.read_text().strip().split("\n")[0] if modes_file.exists() else ""
-
-            if status == "connected" and enabled == "enabled" and expected_res in mode:
-                # Small grace period for compositor to finish
-                time.sleep(0.5)
-                return True, mode
+            if status == "connected":
+                if libdrm and drm_type and _check_crtc_active(libdrm, card_path, drm_type, type_id):
+                    modes_file = sysfs_base / "modes"
+                    mode = modes_file.read_text().strip().split("\n")[0] if modes_file.exists() else ""
+                    # Short grace period for compositor to finish rendering setup
+                    time.sleep(0.3)
+                    return True, mode
         except (OSError, IOError):
             pass
 
@@ -678,33 +715,47 @@ def force_crtc_assignment(card_name, port):
 
     card_path = f"/dev/dri/{card_name}"
 
-    # First check state without needing master (read-only)
-    try:
-        probe_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
-    except OSError as e:
-        print(f"    Could not open {card_path}: {e}")
-        return False
-
-    try:
-        res = libdrm.drmModeGetResources(probe_fd)
-        if not res:
-            print("    drmModeGetResources failed")
+    # Probe connector state, retrying until the connector becomes DRM-connected.
+    # After sysfs hotplug (`echo on > status`) there is a window where the kernel
+    # has marked the connector connected in sysfs but the DRM subsystem has not
+    # yet updated conn.connection — typically resolves within a few hundred ms.
+    probe_deadline = time.monotonic() + 5.0
+    probe_interval = 0.3
+    result = None
+    while True:
+        is_last = time.monotonic() >= probe_deadline
+        try:
+            probe_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
+        except OSError as e:
+            print(f"    Could not open {card_path}: {e}")
             return False
 
         try:
-            result = _probe_connector(libdrm, probe_fd, res, drm_type, type_id, port)
+            res = libdrm.drmModeGetResources(probe_fd)
+            if not res:
+                print("    drmModeGetResources failed")
+                return False
+            try:
+                result = _probe_connector(
+                    libdrm, probe_fd, res, drm_type, type_id, port,
+                    silent=not is_last,
+                )
+            finally:
+                libdrm.drmModeFreeResources(res)
         finally:
-            libdrm.drmModeFreeResources(res)
+            os.close(probe_fd)
 
-        if result is None:
-            return False  # error already printed
-        if result is True:
-            return True  # already has CRTC
+        if result is not None or is_last:
+            break
+        time.sleep(probe_interval)
 
-        # result is (crtc_id, connector_id, mode) — need to do the SetCrtc
-        crtc_id, connector_id, mode_copy = result
-    finally:
-        os.close(probe_fd)
+    if result is None:
+        return False  # error already printed on last attempt
+    if result is True:
+        return True  # already has CRTC
+
+    # result is (crtc_id, connector_id, mode) — need to do the SetCrtc
+    crtc_id, connector_id, mode_copy = result
 
     print(f"    Assigning CRTC {crtc_id} to {port} ({mode_copy.hdisplay}x{mode_copy.vdisplay})")
 
@@ -787,12 +838,15 @@ def force_crtc_assignment(card_name, port):
         return False
 
 
-def _probe_connector(libdrm, fd, res, drm_type, type_id, port):
+def _probe_connector(libdrm, fd, res, drm_type, type_id, port, silent=False):
     """
     Check connector state. Returns:
       True      — already has a CRTC, nothing to do
       None      — error (not found, not connected, no modes)
       (crtc_id, connector_id, mode_copy) — needs SetCrtc
+
+    Pass silent=True to suppress transient "not connected" messages during
+    retry loops.
     """
     conn_p = _find_connector(libdrm, fd, res, drm_type, type_id)
     if not conn_p:
@@ -803,7 +857,8 @@ def _probe_connector(libdrm, fd, res, drm_type, type_id, port):
         conn = conn_p.contents
 
         if conn.connection != 1:
-            print(f"    Connector {port} is not DRM-connected (status={conn.connection})")
+            if not silent:
+                print(f"    Connector {port} is not DRM-connected (status={conn.connection})")
             return None
 
         # Check if it already has a CRTC
