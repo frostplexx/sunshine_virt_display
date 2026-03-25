@@ -191,17 +191,20 @@ def connect(width: int, height: int, refresh_rate: int) -> bool:
 
     print(f"  ✓ Virtual display enabled on {empty_port}")
 
-    # Step 7: Force CRTC assignment via DRM ioctl, then wait for output
-    print(f"\nStep 7: Forcing CRTC assignment...")
-    force_crtc_assignment(card_name, empty_port)
-
-    print(f"\nStep 8: Waiting for output to be ready...")
-    ready, mode = wait_for_output_ready(card_name, empty_port, width, height)
+    # Step 7: Wait for compositor to assign CRTC naturally, then fall back to forcing
+    print(f"\nStep 7: Waiting for output to be ready...")
+    ready, mode = wait_for_output_ready(card_name, empty_port, width, height, timeout=5.0)
 
     if ready:
         print(f"  ✓ Output ready ({mode})")
     else:
-        print(f"  ⚠ Timed out waiting for output, proceeding anyway")
+        print(f"  ⚠ Compositor did not assign CRTC — forcing assignment...")
+        force_crtc_assignment(card_name, empty_port)
+        ready, mode = wait_for_output_ready(card_name, empty_port, width, height, timeout=5.0)
+        if ready:
+            print(f"  ✓ Output ready ({mode})")
+        else:
+            print(f"  ⚠ Timed out waiting for output, proceeding anyway")
 
     # Save state for disconnect
     state_file = SCRIPT_DIR / "virt_display.state"
