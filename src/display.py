@@ -2,9 +2,6 @@
 Connect and disconnect virtual displays by managing EDIDs and sysfs connector state.
 """
 
-import json
-import os
-import pwd
 import time
 from pathlib import Path
 
@@ -18,58 +15,10 @@ from src.drm import (
     run_command,
     wait_for_output_ready,
 )
+from src.drm.de.kwin import clear_kwin_output_config
 from src.edid import create_edid, find_best_vic_resolution, get_pixel_clock_info
 
 SCRIPT_DIR = Path(__file__).parent.parent.absolute()
-
-
-def _clear_kwin_output_config(port: str) -> None:
-    """
-    Remove any stale KWin saved output config for *port* so that KWin applies
-    the EDID preferred mode instead of a previously-saved resolution/scale.
-
-    KWin stores per-connector config keyed by connector name in
-    ~/.config/kwinoutputconfig.json.  When a physical monitor was last seen on
-    e.g. DP-2 at 2560x1440, that entry persists and overrides our custom EDID
-    when the virtual connector appears on the same port name.
-
-    Runs as root (via sudo), so we look up the real user from $SUDO_USER.
-    """
-    sudo_user = os.environ.get("SUDO_USER")
-    if not sudo_user:
-        return
-
-    try:
-        home = Path(pwd.getpwnam(sudo_user).pw_dir)
-    except KeyError:
-        return
-
-    config_path = home / ".config" / "kwinoutputconfig.json"
-    if not config_path.exists():
-        return
-
-    try:
-        data = json.loads(config_path.read_text())
-        # kwinoutputconfig.json may be {"outputs": [...]} or a bare [...]
-        if isinstance(data, list):
-            outputs = data
-            filtered = [o for o in outputs if o.get("name") != port]
-            if len(filtered) < len(outputs):
-                config_path.write_text(json.dumps(filtered, indent=2))
-                print(f"  ✓ Cleared KWin saved config for {port} (was overriding EDID resolution)")
-            else:
-                print(f"  ✓ No stale KWin config for {port}")
-        else:
-            outputs = data.get("outputs", [])
-            original_count = len(outputs)
-            data["outputs"] = [o for o in outputs if o.get("name") != port]
-            if len(data["outputs"]) < original_count:
-                config_path.write_text(json.dumps(data, indent=2))
-                print(f"  ✓ Cleared KWin saved config for {port} (was overriding EDID resolution)")
-            else:
-                print(f"  ✓ No stale KWin config for {port}")
-    except Exception as e:
-        print(f"  Warning: Could not update kwinoutputconfig.json: {e}")
 
 
 def connect(width: int, height: int, refresh_rate: int, device: str | None = None) -> bool:
@@ -207,7 +156,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
 
     # Step 6: Clear any stale KWin output config, then turn on virtual display
     print(f"\nStep 6: Preparing virtual display ({empty_port})...")
-    _clear_kwin_output_config(empty_port)
+    clear_kwin_output_config(empty_port)
     print(f"  Turning on virtual display ({empty_port})...")
     status_path = f"/sys/class/drm/{card_name}-{empty_port}/status"
     cmd = f"sh -c 'echo on > {status_path}'"
