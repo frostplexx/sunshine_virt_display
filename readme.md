@@ -65,6 +65,16 @@ sh -c "path/to/virt_display.sh --connect --width ${SUNSHINE_CLIENT_WIDTH} --heig
 path/to/virt_display.sh --disconnect
 ```
 
+### Multi-GPU systems
+
+On systems with both an integrated GPU (iGPU) and a discrete GPU (dGPU), the script automatically selects the card with the most connected displays. If it picks the wrong GPU, you can override the selection with the `-d` flag:
+
+```bash
+sh -c "path/to/virt_display.sh --connect -d card2 --width ${SUNSHINE_CLIENT_WIDTH} --height ${SUNSHINE_CLIENT_HEIGHT} --refresh-rate ${SUNSHINE_CLIENT_FPS}"
+```
+
+To find the right card name, run the debug script and look at section 2 ("KMS connector/encoder/CRTC state") — each GPU is listed as `/dev/dri/cardN`. Pick the card that shows your physical monitor(s) as connected.
+
 ### Updating the Script
 
 To update to the latest version:

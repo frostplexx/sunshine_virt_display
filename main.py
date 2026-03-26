@@ -56,6 +56,15 @@ Examples:
             default=60,
             help="Refresh rate in Hz (default: 60)",
         )
+        _ = parser.add_argument(
+            "-d",
+            "--device",
+            type=str,
+            default=None,
+            metavar="CARD",
+            help="DRM card to use for the virtual display (e.g. card1). "
+                 "Auto-detected by default (card with most connected displays).",
+        )
 
         args = parser.parse_args()
 
@@ -67,7 +76,7 @@ Examples:
                 )
                 sys.exit(1)
 
-            success = display.connect(args.width, args.height, args.refresh_rate)
+            success = display.connect(args.width, args.height, args.refresh_rate, device=args.device)
             sys.exit(0 if success else 1)
 
         elif args.disconnect:

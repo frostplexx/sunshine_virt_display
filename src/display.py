@@ -72,7 +72,7 @@ def _clear_kwin_output_config(port: str) -> None:
         print(f"  Warning: Could not update kwinoutputconfig.json: {e}")
 
 
-def connect(width: int, height: int, refresh_rate: int) -> bool:
+def connect(width: int, height: int, refresh_rate: int, device: str | None = None) -> bool:
     """
     Connect a virtual display:
     1. Generate custom EDID
@@ -140,7 +140,27 @@ def connect(width: int, height: int, refresh_rate: int) -> bool:
         print("Error: No DRM devices found")
         return False
 
-    drm_device = drm_devices[0]
+    if device:
+        # User explicitly specified a card — find it or fail clearly.
+        matched = [d for d in drm_devices if get_card_name_from_device(d) == device]
+        if not matched:
+            available = [get_card_name_from_device(d) for d in drm_devices]
+            print(f"Error: device '{device}' not found. Available: {available}")
+            return False
+        drm_device = matched[0]
+    else:
+        # Pick the device that has the most connected displays — on multi-GPU
+        # systems this ensures we land on the card with physical monitors rather
+        # than an idle iGPU that happens to sort first by PCI address.
+        best_device = drm_devices[0]
+        best_count = -1
+        for dev in drm_devices:
+            c = get_card_name_from_device(dev)
+            n = len(get_connected_displays(c))
+            if n > best_count:
+                best_count = n
+                best_device = dev
+        drm_device = best_device
     card_name = get_card_name_from_device(drm_device)
     print(f"  Using device: {drm_device.name} ({card_name})")
 
