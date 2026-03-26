@@ -1,0 +1,4 @@
+__pycache__/
+custom_edid.bin
+virt_display.state
+.direnv
