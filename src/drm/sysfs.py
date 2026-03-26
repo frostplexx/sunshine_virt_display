@@ -3,20 +3,22 @@ Sysfs and debugfs helpers for discovering GPU devices, display ports,
 and connector state.
 """
 
+from __future__ import annotations
+
 import os
 import subprocess
 from pathlib import Path
 
 
-def run_command(command):
+def run_command(command: str) -> subprocess.CompletedProcess[str]:
     """Run a shell command and return the CompletedProcess."""
     return subprocess.run(command, shell=True, capture_output=True, text=True)
 
 
-def get_drm_devices():
+def get_drm_devices() -> list[Path]:
     """Get list of DRM devices from /sys/kernel/debug/dri/"""
     debug_dri_path = "/sys/kernel/debug/dri"
-    devices = []
+    devices: list[Path] = []
 
     result = run_command(f"ls -1 {debug_dri_path}")
     if result.returncode != 0:
@@ -32,9 +34,9 @@ def get_drm_devices():
     return sorted(devices)
 
 
-def get_display_ports(drm_device):
+def get_display_ports(drm_device: Path) -> dict[str, list[str]]:
     """Get all display ports for a given DRM device."""
-    ports = {"DP": [], "HDMI": []}
+    ports: dict[str, list[str]] = {"DP": [], "HDMI": []}
 
     result = run_command(f"ls -1 {drm_device}")
     if result.returncode != 0:
@@ -50,10 +52,10 @@ def get_display_ports(drm_device):
     return ports
 
 
-def get_connected_displays(card_name):
+def get_connected_displays(card_name: str) -> list[str]:
     """Get list of currently connected displays from /sys/class/drm/"""
     drm_path = Path("/sys/class/drm")
-    connected = []
+    connected: list[str] = []
 
     for display in drm_path.iterdir():
         if display.name.startswith(f"{card_name}-"):
@@ -70,7 +72,7 @@ def get_connected_displays(card_name):
     return connected
 
 
-def find_empty_slot(drm_device, card_name):
+def find_empty_slot(drm_device: Path, card_name: str) -> tuple[str | None, Path | None]:
     """Find the first empty display slot, preferring DP over HDMI."""
     ports = get_display_ports(drm_device)
     connected = get_connected_displays(card_name)
@@ -86,7 +88,7 @@ def find_empty_slot(drm_device, card_name):
     return None, None
 
 
-def get_card_name_from_device(drm_device_path):
+def get_card_name_from_device(drm_device_path: Path) -> str:
     """Extract card name (e.g., 'card1') from DRM device path."""
     device_name = drm_device_path.name
 

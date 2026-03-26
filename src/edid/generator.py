@@ -2,18 +2,20 @@
 EDID binary generator — builds a 256-byte EDID (base block + CEA-861 extension).
 """
 
+from __future__ import annotations
+
 import struct
 
 from src.edid.timing import calculate_checksum
 
 
 def create_edid(
-    width=1920,
-    height=1080,
-    refresh_rate=60,
-    enable_hdr=False,
-    display_name="Custom Display",
-):
+    width: int = 1920,
+    height: int = 1080,
+    refresh_rate: int = 60,
+    enable_hdr: bool = False,
+    display_name: str = "Custom Display",
+) -> bytes:
     """
     Create EDID with custom settings.
 

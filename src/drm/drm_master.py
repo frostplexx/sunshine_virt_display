@@ -5,40 +5,46 @@ Allows temporarily borrowing DRM master from a running compositor,
 performing an operation, then restoring it.
 """
 
+from __future__ import annotations
+
 import ctypes
 import ctypes.util
 import fcntl
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar, cast
 
 from src.drm.bindings import DRM_IOCTL_DROP_MASTER, DRM_IOCTL_SET_MASTER
+
+T = TypeVar("T")
 
 # ---------------------------------------------------------------------------
 # Syscall wrappers (x86_64)
 # ---------------------------------------------------------------------------
 
-_SYS_PIDFD_OPEN = 434
-_SYS_PIDFD_GETFD = 438
+_SYS_PIDFD_OPEN: int = 434
+_SYS_PIDFD_GETFD: int = 438
 
 _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 _libc.syscall.restype = ctypes.c_long
 
 
-def _pidfd_open(pid, flags=0):
-    rc = _libc.syscall(_SYS_PIDFD_OPEN, ctypes.c_int(pid), ctypes.c_uint(flags))
+def _pidfd_open(pid: int, flags: int = 0) -> int:
+    rc = cast(int, _libc.syscall(_SYS_PIDFD_OPEN, ctypes.c_int(pid), ctypes.c_uint(flags)))
     if rc < 0:
         errno = ctypes.get_errno()
         raise OSError(errno, f"pidfd_open({pid}): {os.strerror(errno)}")
     return rc
 
 
-def _pidfd_getfd(pidfd, targetfd, flags=0):
-    rc = _libc.syscall(
+def _pidfd_getfd(pidfd: int, targetfd: int, flags: int = 0) -> int:
+    rc = cast(int, _libc.syscall(
         _SYS_PIDFD_GETFD,
         ctypes.c_int(pidfd),
         ctypes.c_int(targetfd),
         ctypes.c_uint(flags),
-    )
+    ))
     if rc < 0:
         errno = ctypes.get_errno()
         raise OSError(errno, f"pidfd_getfd({targetfd}): {os.strerror(errno)}")
@@ -50,7 +56,7 @@ def _pidfd_getfd(pidfd, targetfd, flags=0):
 # ---------------------------------------------------------------------------
 
 
-def _find_compositor_pid_and_fd(card_path):
+def _find_compositor_pid_and_fd(card_path: str) -> tuple[int, int] | tuple[None, None]:
     """
     Find the process that holds DRM master for the given card device.
     Scans /proc for processes with the card open, then tests each by
@@ -63,7 +69,7 @@ def _find_compositor_pid_and_fd(card_path):
         return None, None
 
     # Collect all (pid, fd_num) candidates
-    candidates = []
+    candidates: list[tuple[int, int]] = []
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit():
             continue
@@ -99,9 +105,9 @@ def _find_compositor_pid_and_fd(card_path):
             finally:
                 os.close(pidfd)
             try:
-                fcntl.ioctl(dup_fd, DRM_IOCTL_DROP_MASTER, 0)
+                _ = fcntl.ioctl(dup_fd, DRM_IOCTL_DROP_MASTER, 0)
                 # It worked — restore master and return this candidate
-                fcntl.ioctl(dup_fd, DRM_IOCTL_SET_MASTER, 0)
+                _ = fcntl.ioctl(dup_fd, DRM_IOCTL_SET_MASTER, 0)
                 os.close(dup_fd)
                 print(f"    Found DRM master: PID {pid} ({comm}) fd {fd_num}")
                 return pid, fd_num
@@ -119,7 +125,7 @@ def _find_compositor_pid_and_fd(card_path):
 # ---------------------------------------------------------------------------
 
 
-def _with_drm_master(card_path, callback):
+def with_drm_master(card_path: str, callback: Callable[[int], T]) -> T:
     """
     Temporarily acquire DRM master, run callback(fd), then restore master
     to the original holder (compositor).
@@ -132,13 +138,13 @@ def _with_drm_master(card_path, callback):
     our_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
     try:
         try:
-            fcntl.ioctl(our_fd, DRM_IOCTL_SET_MASTER, 0)
+            _ = fcntl.ioctl(our_fd, DRM_IOCTL_SET_MASTER, 0)
             print("    Direct SET_MASTER succeeded (no compositor holding master)")
             try:
                 return callback(our_fd)
             finally:
                 try:
-                    fcntl.ioctl(our_fd, DRM_IOCTL_DROP_MASTER, 0)
+                    _ = fcntl.ioctl(our_fd, DRM_IOCTL_DROP_MASTER, 0)
                 except OSError:
                     pass
         except OSError as e:
@@ -151,7 +157,7 @@ def _with_drm_master(card_path, callback):
 
     # Find the compositor's DRM fd
     comp_pid, comp_fd_num = _find_compositor_pid_and_fd(card_path)
-    if comp_pid is None:
+    if comp_pid is None or comp_fd_num is None:
         raise RuntimeError("Could not find process holding DRM master")
 
     print(f"    Borrowing DRM master from PID {comp_pid} (fd {comp_fd_num})")
@@ -166,20 +172,20 @@ def _with_drm_master(card_path, callback):
     try:
         # Drop master on the compositor's drm_file
         print("    Dropping compositor's DRM master...")
-        fcntl.ioctl(stolen_fd, DRM_IOCTL_DROP_MASTER, 0)
+        _ = fcntl.ioctl(stolen_fd, DRM_IOCTL_DROP_MASTER, 0)
         print("    Compositor master dropped, acquiring our own...")
 
         # Now open our own fd and acquire master
         our_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
         try:
-            fcntl.ioctl(our_fd, DRM_IOCTL_SET_MASTER, 0)
+            _ = fcntl.ioctl(our_fd, DRM_IOCTL_SET_MASTER, 0)
             print("    DRM master acquired successfully")
             try:
                 return callback(our_fd)
             finally:
                 # Drop our master
                 try:
-                    fcntl.ioctl(our_fd, DRM_IOCTL_DROP_MASTER, 0)
+                    _ = fcntl.ioctl(our_fd, DRM_IOCTL_DROP_MASTER, 0)
                 except OSError:
                     pass
         finally:
@@ -188,7 +194,7 @@ def _with_drm_master(card_path, callback):
         # Restore master to compositor
         print("    Restoring DRM master to compositor...")
         try:
-            fcntl.ioctl(stolen_fd, DRM_IOCTL_SET_MASTER, 0)
+            _ = fcntl.ioctl(stolen_fd, DRM_IOCTL_SET_MASTER, 0)
             print("    Compositor master restored")
         except OSError as e:
             print(f"    Warning: could not restore compositor master: {e}")

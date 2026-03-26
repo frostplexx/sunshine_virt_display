@@ -2,13 +2,15 @@
 Pixel clock calculations and EDID checksum utilities.
 """
 
+from __future__ import annotations
 
-def calculate_checksum(data):
+
+def calculate_checksum(data: bytes | bytearray) -> int:
     """Calculate EDID checksum (sum of all bytes must be 0 mod 256)."""
     return (256 - (sum(data) % 256)) % 256
 
 
-def check_if_calculation_breaks(width, height, refresh_rate):
+def check_if_calculation_breaks(width: int, height: int, refresh_rate: int) -> bool:
     """
     Check if the given resolution/refresh rate combination would exceed
     the EDID pixel clock limit (655.35 MHz).
@@ -23,7 +25,7 @@ def check_if_calculation_breaks(width, height, refresh_rate):
     return pixel_clock > 65535
 
 
-def get_pixel_clock_info(width, height, refresh_rate):
+def get_pixel_clock_info(width: int, height: int, refresh_rate: int) -> tuple[float, float, bool]:
     """
     Get detailed pixel clock information for diagnostics.
     Returns (pixel_clock_mhz, max_mhz, would_break).

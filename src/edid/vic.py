@@ -2,6 +2,8 @@
 CEA-861 Video Identification Code (VIC) standard resolutions and lookup.
 """
 
+from __future__ import annotations
+
 # Format: VIC: (width, height, refresh_rate, name)
 VIC_RESOLUTIONS = {
     1: (640, 480, 60, "DMT0659"),
@@ -161,7 +163,14 @@ VIC_RESOLUTIONS = {
 }
 
 
-def find_best_vic_resolution(target_width, target_height, target_refresh):
+VIC_RESOLUTIONS: dict[int, tuple[int, int, int, str]]
+
+
+def find_best_vic_resolution(
+    target_width: int,
+    target_height: int,
+    target_refresh: int,
+) -> tuple[int, int, int, int, str] | None:
     """
     Find the next best VIC resolution from the standard list.
     Prioritizes: 1) Refresh rate, 2) Resolution, 3) Aspect ratio

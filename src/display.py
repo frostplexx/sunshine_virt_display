@@ -2,7 +2,8 @@
 Connect and disconnect virtual displays by managing EDIDs and sysfs connector state.
 """
 
-import time
+from __future__ import annotations
+
 from pathlib import Path
 
 from src.drm import (
@@ -76,7 +77,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
     )
 
     edid_file = SCRIPT_DIR / "custom_edid.bin"
-    edid_file.write_bytes(edid_data)
+    _ = edid_file.write_bytes(edid_data)
     print(f"  ✓ Created EDID file: {edid_file}")
     print(f"  ✓ Final resolution: {width}x{height} @ {refresh_rate}Hz")
     print(f"  ✓ EDID size: {len(edid_data)} bytes")
@@ -120,7 +121,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
 
     # Step 3: Find empty slot
     print("\nStep 3: Finding empty display slot...")
-    empty_port, device = find_empty_slot(drm_device, card_name)
+    empty_port, slot_device = find_empty_slot(drm_device, card_name)
 
     if not empty_port:
         print("Error: No empty display slots available")
@@ -130,7 +131,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
 
     # Step 4: Override EDID
     print(f"\nStep 4: Overriding EDID for {empty_port}...")
-    edid_override_path = device / empty_port / "edid_override"
+    edid_override_path = slot_device / empty_port / "edid_override"
 
     cmd = f"sh -c 'cat {edid_file.absolute()} > {edid_override_path}'"
     result = run_command(cmd)
@@ -148,10 +149,10 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
     # multiple monitors, and uses the wrong one.
     print("\nStep 5: Turning off connected displays...")
     for display in connected_displays:
-        release_crtc(card_name, display)
+        _ = release_crtc(card_name, display)
         status_path = f"/sys/class/drm/{card_name}-{display}/status"
         cmd = f"sh -c 'echo off > {status_path}'"
-        run_command(cmd)
+        _ = run_command(cmd)
         print(f"  ✓ Turned off {display}")
 
     # Step 6: Clear any stale KWin output config, then turn on virtual display
@@ -176,7 +177,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
         print(f"  ✓ Output ready ({mode})")
     else:
         print(f"  ⚠ Compositor did not assign CRTC — forcing assignment...")
-        force_crtc_assignment(card_name, empty_port)
+        _ = force_crtc_assignment(card_name, empty_port)
         ready, mode = wait_for_output_ready(card_name, empty_port, width, height, timeout=5.0)
         if ready:
             print(f"  ✓ Output ready ({mode})")
@@ -185,7 +186,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
 
     # Save state for disconnect
     state_file = SCRIPT_DIR / "virt_display.state"
-    state_file.write_text(f"{card_name}\n{empty_port}\n{','.join(connected_displays)}")
+    _ = state_file.write_text(f"{card_name}\n{empty_port}\n{','.join(connected_displays)}")
 
     print(f"\n✓ Virtual display successfully connected!")
     print(f"  Port: {card_name}-{empty_port}")
@@ -208,13 +209,13 @@ def disconnect() -> bool:
         return False
 
     state_data = state_file.read_text().strip().split("\n")
-    if len(state_data) < 3:
+    if len(state_data) < 2:
         print("Error: Invalid state file")
         return False
 
     card_name = state_data[0]
     virtual_port = state_data[1]
-    previous_displays = state_data[2].split(",") if state_data[2] else []
+    previous_displays = state_data[2].split(",") if len(state_data) > 2 and state_data[2] else []
 
     print(f"  Virtual display: {card_name}-{virtual_port}")
     print(f"  Previous displays: {previous_displays if previous_displays else 'None'}")
@@ -227,7 +228,7 @@ def disconnect() -> bool:
         if display:
             status_path = f"/sys/class/drm/{card_name}-{display}/status"
             cmd = f"sh -c 'echo on > {status_path}'"
-            run_command(cmd)
+            _ = run_command(cmd)
             print(f"  ✓ Turned on {display}")
 
     # Step 2: Force CRTC assignment for restored displays
@@ -235,11 +236,11 @@ def disconnect() -> bool:
     print("\nStep 2: Forcing CRTC assignment for restored displays...")
     for display in previous_displays:
         if display:
-            force_crtc_assignment(card_name, display)
+            _ = force_crtc_assignment(card_name, display)
 
     # Step 3: Release CRTC from virtual display and turn it off
     print(f"\nStep 3: Releasing CRTC from virtual display ({virtual_port})...")
-    release_crtc(card_name, virtual_port)
+    _ = release_crtc(card_name, virtual_port)
 
     print(f"\nStep 4: Turning off virtual display ({virtual_port})...")
     status_path = f"/sys/class/drm/{card_name}-{virtual_port}/status"
