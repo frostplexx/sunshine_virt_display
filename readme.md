@@ -7,6 +7,12 @@ It automatically manages display connections by overriding EDID information and 
 
 ⚠️ Its is recommended to enable ssh in case something goes wrong and you get stuck with a disabled display. You can always run `virt_display.sh --disconnect` to turn on your old display.
 
+### Important Requirements
+
+- The script requires root privileges to modify display settings
+- Ensure debugfs is mounted at `/sys/kernel/debug/`
+- Python 3
+
 ### Installation
 
 Clone the repo:
@@ -86,12 +92,6 @@ git fetch --tags
 git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 ```
 
-### Important Requirements
-
-- The script requires root privileges to modify display settings
-- Ensure debugfs is mounted at `/sys/kernel/debug/`
-- Python 3
-
 ## How It Works
 
 ### On Connect:
@@ -117,6 +117,7 @@ git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 - Disconnecting is sometimes slow and janky but will fix itself after ~15s
 - On MacBooks with notches the notch will be ignored and will cut into content
 - Very high resolutions and refresh rates won't work due to limitations in EDID 1.4.
+- HDR is broken and causes display to freeze when enabled
 
 ## Tested On
 
