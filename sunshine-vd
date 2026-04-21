@@ -1,0 +1,13 @@
+#!/usr/bin/python3
+import socket
+import sys
+
+# Format the 3 args into a string
+message = ",".join(sys.argv[1:6])
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    client.connect("/tmp/sunshineVD.sock")
+    client.sendall(message.encode('utf-8'))
+finally:
+    client.close()

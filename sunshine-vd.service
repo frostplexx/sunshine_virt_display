@@ -1,0 +1,19 @@
+[Unit]
+Description=Sunshine Virtual Display Daemon
+
+After=display-manager.service
+
+[Service]
+
+Type=simple
+
+User=root
+Group=root
+
+ExecStart=/usr/bin/python3 /opt/sunshine-vd/receiver.py
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
