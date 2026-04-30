@@ -107,7 +107,8 @@ git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 - Disconnecting is sometimes slow and janky but will fix itself after ~15s
 - On MacBooks with notches the notch will be ignored and will cut into content
 - Very high resolutions and refresh rates won't work due to limitations in EDID 1.4.
-- HDR is broken and causes display to freeze when enabled
+- HDR is broken and causes display to freeze when enabled\
+- Stuttering on some displays: Enable V-Sync and frame pacing in Moonlight.
 
 ## Tested On
 
