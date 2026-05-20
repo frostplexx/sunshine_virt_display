@@ -297,6 +297,7 @@ class TestDisconnect:
         with patch("src.display.SCRIPT_DIR", tmp_path), \
              patch("src.display.run_command", return_value=_ok_run()), \
              patch("src.display.force_crtc_assignment", return_value=True), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "1920x1080")), \
              patch("src.display.release_crtc", return_value=True):
             result = disconnect()
         assert result is True
@@ -306,6 +307,7 @@ class TestDisconnect:
         with patch("src.display.SCRIPT_DIR", tmp_path), \
              patch("src.display.run_command", return_value=_ok_run()), \
              patch("src.display.force_crtc_assignment", return_value=True), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "1920x1080")), \
              patch("src.display.release_crtc", return_value=True):
             disconnect()
         assert not (tmp_path / "virt_display.state").exists()
@@ -370,6 +372,7 @@ class TestDisconnect:
         with patch("src.display.SCRIPT_DIR", tmp_path), \
              patch("src.display.run_command", return_value=_ok_run()), \
              patch("src.display.force_crtc_assignment", mock_force), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "1920x1080")), \
              patch("src.display.release_crtc", return_value=True):
             disconnect()
         assert mock_force.call_count == 2
