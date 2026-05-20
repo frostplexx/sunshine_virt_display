@@ -168,6 +168,8 @@ Both `PrepareForShutdown` (via DBus) and SIGTERM trigger a graceful disconnect b
 - On MacBooks with notches, the notch area cuts into content
 - Very high resolutions and refresh rates may not work due to EDID 1.4 pixel-clock limits
 - HDR causes the display to freeze and is disabled by default
+- Stuttering on some displays: Enable V-Sync and frame pacing in Moonlight.
+
 
 ## Tested On
 
