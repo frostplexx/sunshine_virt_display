@@ -17,6 +17,13 @@ def _fail_run(cmd: str = "") -> CompletedProcess:
     return CompletedProcess(args=cmd, returncode=1, stdout="", stderr="error")
 
 
+@pytest.fixture(autouse=True)
+def _default_to_legacy_drm_path():
+    """Keep existing tests deterministic on NVIDIA/Hyprland dev machines."""
+    with patch("src.display._use_hyprland_safe_path", return_value=False):
+        yield
+
+
 class TestConnect:
     def _base_patches(self):
         """Return a dict of patch targets with sensible defaults."""
@@ -272,6 +279,64 @@ class TestConnect:
         assert "DP-1" in content
         assert "HDMI-1" in content
 
+    def test_nvidia_hyprland_safe_path_preserves_monitor_options(self, tmp_path):
+        restore_specs = {
+            "DP-1": {
+                "output": "DP-1",
+                "mode": "3440x1440@144.0",
+                "position": "0x0",
+                "scale": 1.0,
+                "bitdepth": 10,
+                "vrr": 1,
+            }
+        }
+        mock_release = MagicMock(return_value=True)
+        mock_force = MagicMock(return_value=True)
+
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._use_hyprland_safe_path", return_value=True), \
+             patch("src.display.hyprland.monitor_specs", return_value=restore_specs), \
+             patch("src.display.hyprland.disable_outputs", return_value=True) as mock_disable, \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:01:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=["DP-1"]), \
+             patch("src.display.find_empty_slot", return_value=("DP-3", tmp_path)), \
+             patch("src.display.run_command", return_value=_ok_run()), \
+             patch("src.display.release_crtc", mock_release), \
+             patch("src.display.force_crtc_assignment", mock_force), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "1280x800")), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            result = connect(1280, 800, 60)
+
+        assert result is True
+        mock_release.assert_not_called()
+        mock_force.assert_not_called()
+        mock_disable.assert_called_once_with(["DP-1"])
+        content = (tmp_path / "virt_display.state").read_text()
+        assert '"bitdepth": 10' in content
+        assert '"vrr": 1' in content
+
+    def test_nvidia_hyprland_safe_path_refuses_without_restore_specs(self, tmp_path):
+        mock_run = MagicMock(return_value=_ok_run())
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._use_hyprland_safe_path", return_value=True), \
+             patch("src.display.hyprland.monitor_specs", return_value={}), \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:01:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=["DP-1"]), \
+             patch("src.display.find_empty_slot", return_value=("DP-3", tmp_path)), \
+             patch("src.display.run_command", mock_run), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            result = connect(1280, 800, 60)
+
+        assert result is False
+        cmds = [call_args[0][0] for call_args in mock_run.call_args_list]
+        assert not any("echo off > /sys/class/drm/card1-DP-1/status" in c for c in cmds)
+
 
 class TestDisconnect:
     def _write_state(self, path: Path, card: str, port: str, displays: list[str]) -> None:
@@ -376,3 +441,21 @@ class TestDisconnect:
              patch("src.display.release_crtc", return_value=True):
             disconnect()
         assert mock_force.call_count == 2
+
+    def test_hyprland_restore_path_skips_crtc_forcing(self, tmp_path):
+        restore_json = '{"DP-1":{"output":"DP-1","mode":"3440x1440@144.0","position":"0x0","scale":1.0,"bitdepth":10,"vrr":1}}'
+        (tmp_path / "virt_display.state").write_text(
+            f"card1\nDP-3\nDP-1\n{tmp_path / 'DP-3' / 'edid_override'}\n{restore_json}"
+        )
+        mock_restore = MagicMock(return_value=True)
+        mock_force = MagicMock(return_value=True)
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.hyprland.restore_outputs", mock_restore), \
+             patch("src.display.run_command", return_value=_ok_run()), \
+             patch("src.display.force_crtc_assignment", mock_force), \
+             patch("src.display.release_crtc", return_value=True):
+            result = disconnect()
+
+        assert result is True
+        mock_restore.assert_called_once()
+        mock_force.assert_not_called()
