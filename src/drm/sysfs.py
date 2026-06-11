@@ -12,6 +12,63 @@ from pathlib import Path
 
 def run_command(command: str) -> subprocess.CompletedProcess[str]:
     """Run a shell command and return the CompletedProcess."""
+    # To run robustly on NixOS, execute simple file writes/clears and directory listings
+    # natively using Python APIs, avoiding shell or external binary execution errors.
+    cmd_stripped = command.strip()
+    if cmd_stripped.startswith("sh -c '") and cmd_stripped.endswith("'"):
+        cmd_stripped = cmd_stripped[7:-1]
+    elif cmd_stripped.startswith('sh -c "') and cmd_stripped.endswith('"'):
+        cmd_stripped = cmd_stripped[7:-1]
+
+    cmd_parts = cmd_stripped.split()
+
+    if ">" in cmd_parts:
+        if not any(char in cmd_stripped for char in ";&|*?$()"):
+            idx = cmd_parts.index(">")
+            if cmd_parts.count(">") == 1:
+                target_path_str = " ".join(cmd_parts[idx+1:]).strip()
+                action_parts = cmd_parts[:idx]
+                if len(action_parts) >= 2:
+                    if action_parts[0] == "cat":
+                        src_path_str = " ".join(action_parts[1:]).strip()
+                        if src_path_str == "/dev/null":
+                            try:
+                                Path(target_path_str).write_bytes(b"")
+                                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                            except Exception as e:
+                                return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr=str(e))
+                        else:
+                            try:
+                                src_bytes = Path(src_path_str).read_bytes()
+                                Path(target_path_str).write_bytes(src_bytes)
+                                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                            except Exception as e:
+                                return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr=str(e))
+                    elif action_parts[0] == "echo":
+                        content = " ".join(action_parts[1:]).strip()
+                        if content.startswith("'") and content.endswith("'"):
+                            content = content[1:-1]
+                        elif content.startswith('"') and content.endswith('"'):
+                            content = content[1:-1]
+                        try:
+                            Path(target_path_str).write_text(content + "\n")
+                            return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                        except Exception as e:
+                            return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr=str(e))
+
+    # Handle "ls -1 /some/path" or "ls /some/path"
+    if (len(cmd_parts) == 2 or len(cmd_parts) == 3) and cmd_parts[0] == "ls":
+        if not any(char in cmd_stripped for char in ";&|*?$()<>"):
+            path_idx = 2 if cmd_parts[1] == "-1" else 1
+            if path_idx < len(cmd_parts):
+                dir_path_str = cmd_parts[path_idx]
+                try:
+                    entries = os.listdir(dir_path_str)
+                    stdout = "".join(f"{entry}\n" for entry in entries)
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout=stdout, stderr="")
+                except Exception as e:
+                    return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr=str(e))
+    
     return subprocess.run(command, shell=True, capture_output=True, text=True)
 
 
