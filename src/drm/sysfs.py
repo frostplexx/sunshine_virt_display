@@ -73,15 +73,15 @@ def get_connected_displays(card_name: str) -> list[str]:
 
 
 def find_empty_slot(drm_device: Path, card_name: str) -> tuple[str | None, Path | None]:
-    """Find the first empty display slot, preferring DP over HDMI."""
+    """Find the first empty display slot, preferring HDMI over DP."""
     ports = get_display_ports(drm_device)
     connected = get_connected_displays(card_name)
 
-    for port in sorted(ports["DP"]):
+    for port in sorted(ports["HDMI"]):
         if port not in connected:
             return port, drm_device
 
-    for port in sorted(ports["HDMI"]):
+    for port in sorted(ports["DP"]):
         if port not in connected:
             return port, drm_device
 
