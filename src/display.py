@@ -14,6 +14,7 @@ from src.drm import (
     get_card_name_from_device,
     get_connected_displays,
     get_drm_devices,
+    notify_hotplug,
     release_crtc,
     run_command,
     wait_for_output_ready,
@@ -87,6 +88,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
             if stale_edid:
                 _ = run_command(f"sh -c 'cat /dev/null > {stale_edid}'")
             _ = run_command(f"sh -c 'echo off > /sys/class/drm/{stale_card}-{stale_port}/status'")
+            _ = notify_hotplug(stale_card)
             time.sleep(0.5)  # let DRM process the hotplug before scanning
         state_file.unlink()
 
@@ -225,6 +227,8 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
             cmd = f"sh -c 'echo off > {status_path}'"
             _ = run_command(cmd)
             print(f"  ✓ Turned off {display}")
+        if connected_displays:
+            _ = notify_hotplug(card_name)
 
     # Step 6: Clear any stale KWin output config, then turn on virtual display
     print(f"\nStep 6: Preparing virtual display ({empty_port})...")
@@ -238,6 +242,9 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
         print(f"  Error turning on display: {result.stderr}")
         return False
 
+    # The sysfs write doesn't emit a hotplug uevent; without one KWin never
+    # sees the new output and Step 7 times out.
+    _ = notify_hotplug(card_name)
     print(f"  ✓ Virtual display enabled on {empty_port}")
 
     # Step 7: Wait for compositor to assign CRTC naturally, then fall back to forcing.
@@ -252,6 +259,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
         print("  ✗ Timed out waiting for virtual output; refusing to hide physical outputs")
         _ = run_command(f"sh -c 'echo off > /sys/class/drm/{card_name}-{empty_port}/status'")
         _ = run_command(f"sh -c 'cat /dev/null > {edid_override_path}'")
+        _ = notify_hotplug(card_name)
         return False
     else:
         print(f"  ⚠ Compositor did not assign CRTC — forcing assignment...")
@@ -270,6 +278,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
             print("  ✗ Could not hide one or more physical outputs — cleaning up virtual display")
             _ = run_command(f"sh -c 'echo off > /sys/class/drm/{card_name}-{empty_port}/status'")
             _ = run_command(f"sh -c 'cat /dev/null > {edid_override_path}'")
+            _ = notify_hotplug(card_name)
             return False
 
     # Save state for disconnect (line 4 = edid_override_path for cleanup,
@@ -338,6 +347,8 @@ def disconnect() -> bool:
                 status_path = f"/sys/class/drm/{card_name}-{disp}/status"
                 _ = run_command(f"sh -c 'echo on > {status_path}'")
                 print(f"  ✓ Turned on {disp}")
+        if any(previous_displays):
+            _ = notify_hotplug(card_name)
 
         # Force CRTC assignment and verify each display is actually up.
         # On AMD, sysfs hotplug alone doesn't assign CRTCs. Retry up to 3 times
@@ -394,6 +405,10 @@ def disconnect() -> bool:
     if edid_override_path:
         _ = run_command(f"sh -c 'cat /dev/null > {edid_override_path}'")
         print(f"  ✓ EDID override cleared")
+
+    # Without a hotplug uevent the compositor keeps the (now disconnected)
+    # virtual output around as an invisible extra screen.
+    _ = notify_hotplug(card_name)
 
     state_file.unlink()
 

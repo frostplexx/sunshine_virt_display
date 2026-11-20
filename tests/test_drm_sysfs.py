@@ -339,3 +339,21 @@ class TestGetCardNameFromDevice:
             with patch("os.readlink", side_effect=OSError("perm denied")):
                 result = get_card_name_from_device(Path("/sys/kernel/debug/dri/0000:01:00.0"))
         assert result == "card1"
+
+
+class TestNotifyHotplug:
+    def test_writes_synthetic_change_event(self, tmp_path):
+        from src.drm.sysfs import notify_hotplug
+        written = {}
+        def fake_write(self, data):
+            written[str(self)] = data
+            return len(data)
+        with patch("pathlib.Path.write_text", fake_write):
+            assert notify_hotplug("card1") is True
+        assert written == {"/sys/class/drm/card1/uevent":
+                           "change 00000000-0000-0000-0000-000000000000 HOTPLUG=1"}
+
+    def test_permission_error_is_non_fatal(self):
+        from src.drm.sysfs import notify_hotplug
+        with patch("pathlib.Path.write_text", side_effect=PermissionError("denied")):
+            assert notify_hotplug("card1") is False

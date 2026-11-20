@@ -15,6 +15,26 @@ def run_command(command: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, shell=True, capture_output=True, text=True)
 
 
+def notify_hotplug(card_name: str) -> bool:
+    """
+    Emit a DRM hotplug uevent for *card_name* so compositors re-probe outputs.
+
+    Forcing a connector via /sys/class/drm/<card>-<port>/status updates the
+    kernel's connector state but does not send a hotplug uevent.  KWin (and
+    other compositors that only re-scan on uevents) therefore never notice the
+    virtual display appearing or disappearing.  Writing a synthetic "change"
+    event with HOTPLUG=1 to the card's uevent file is what a real cable plug
+    would have produced.
+    """
+    path = Path(f"/sys/class/drm/{card_name}/uevent")
+    try:
+        _ = path.write_text("change 00000000-0000-0000-0000-000000000000 HOTPLUG=1")
+        return True
+    except OSError as e:
+        print(f"  Warning: could not send hotplug event for {card_name}: {e}")
+        return False
+
+
 def get_drm_devices() -> list[Path]:
     """Get list of DRM devices from /sys/kernel/debug/dri/"""
     debug_dri_path = "/sys/kernel/debug/dri"

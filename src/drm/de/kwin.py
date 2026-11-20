@@ -217,12 +217,19 @@ def monitor_specs(outputs: list[str]) -> dict[str, dict[str, object]]:
         if name not in wanted or not out.get("enabled"):
             continue
         mode_id = out.get("currentModeId")
-        if mode_id in (None, ""):
+        current = next((m for m in out.get("modes") or [] if str(m.get("id")) == str(mode_id)), None)
+        size = (current or {}).get("size") or {}
+        if not current or not size.get("width") or not size.get("height"):
             continue
         pos = out.get("pos") or {}
+        # KWin renumbers mode ids whenever the set of outputs changes (e.g.
+        # when the virtual display appears), so store the mode itself and
+        # resolve it to an id again at restore time.
         spec: dict[str, object] = {
             "output": name,
-            "mode": str(mode_id),
+            "width": int(size["width"]),
+            "height": int(size["height"]),
+            "refresh": float(current.get("refreshRate", 0)),
             "position": f"{int(pos.get('x', 0))},{int(pos.get('y', 0))}",
             "scale": out.get("scale", 1),
         }
@@ -245,15 +252,39 @@ def disable_outputs(outputs: list[str]) -> bool:
     return bool(result and result.returncode == 0)
 
 
+def _resolve_mode(spec: dict[str, object], outputs: list[dict[str, Any]]) -> str | None:
+    """Map a saved WxH@refresh to the output's *current* KWin mode id."""
+    if "width" not in spec:
+        # Legacy spec that stored a raw mode id
+        mode = spec.get("mode")
+        return str(mode) if mode not in (None, "") else None
+
+    w, h = spec["width"], spec["height"]
+    refresh = float(spec.get("refresh", 0))  # type: ignore[arg-type]
+    out = next((o for o in outputs if o.get("name") == spec["output"]), None)
+    candidates = [
+        m for m in (out or {}).get("modes") or []
+        if (m.get("size") or {}).get("width") == w and (m.get("size") or {}).get("height") == h
+    ]
+    if candidates:
+        best = min(candidates, key=lambda m: abs(float(m.get("refreshRate", 0)) - refresh))
+        return str(best["id"])
+    # Fall back to kscreen-doctor's name matching
+    return f"{w}x{h}@{round(refresh)}"
+
+
 def restore_outputs(specs: dict[str, dict[str, object]]) -> bool:
     """Re-enable physical outputs through KWin with their saved configuration."""
     if not specs:
         return True
+    outputs = _outputs() or []
     args: list[str] = []
     for spec in specs.values():
         o = spec["output"]
         args.append(f"output.{o}.enable")
-        args.append(f"output.{o}.mode.{spec['mode']}")
+        mode = _resolve_mode(spec, outputs)
+        if mode:
+            args.append(f"output.{o}.mode.{mode}")
         args.append(f"output.{o}.position.{spec['position']}")
         args.append(f"output.{o}.scale.{spec['scale']}")
         if "rotation" in spec:

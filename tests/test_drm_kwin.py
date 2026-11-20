@@ -123,10 +123,14 @@ from src.drm.de import kwin  # noqa: E402
 
 _KSCREEN_JSON = json.dumps({"outputs": [
     {"id": 1, "name": "HDMI-A-2", "enabled": True, "connected": True, "currentModeId": "3",
+     "modes": [{"id": "1", "name": "3840x2160@60", "refreshRate": 60.0, "size": {"width": 3840, "height": 2160}},
+               {"id": "3", "name": "3440x1440@100", "refreshRate": 99.98, "size": {"width": 3440, "height": 1440}},
+               {"id": "4", "name": "3440x1440@50", "refreshRate": 49.99, "size": {"width": 3440, "height": 1440}}],
      "pos": {"x": 1920, "y": 0}, "scale": 1.25, "priority": 1, "rotation": 1},
     {"id": 2, "name": "DP-2", "enabled": False, "connected": True, "currentModeId": "1",
      "pos": {"x": 0, "y": 0}, "scale": 1, "priority": 0, "rotation": 1},
     {"id": 3, "name": "eDP-1", "enabled": True, "connected": True, "currentModeId": "7",
+     "modes": [{"id": "7", "name": "2560x1600@120", "refreshRate": 120.0, "size": {"width": 2560, "height": 1600}}],
      "pos": {"x": 0, "y": 0}, "scale": 2, "priority": 2, "rotation": 2},
 ]})
 
@@ -139,7 +143,8 @@ class TestKscreenDoctorBackend:
     def test_monitor_specs_captures_restore_state(self):
         with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out=_KSCREEN_JSON)):
             specs = kwin.monitor_specs(["HDMI-A-2", "eDP-1"])
-        assert specs["HDMI-A-2"] == {"output": "HDMI-A-2", "mode": "3", "position": "1920,0",
+        assert specs["HDMI-A-2"] == {"output": "HDMI-A-2", "width": 3440, "height": 1440,
+                                     "refresh": 99.98, "position": "1920,0",
                                      "scale": 1.25, "priority": 1, "rotation": "none"}
         assert specs["eDP-1"]["rotation"] == "left"
         assert specs["eDP-1"]["priority"] == 2
@@ -170,9 +175,10 @@ class TestKscreenDoctorBackend:
             assert kwin.disable_outputs(["HDMI-A-2"]) is False
 
     def test_restore_outputs_builds_full_command(self):
-        spec = {"output": "HDMI-A-2", "mode": "3", "position": "1920,0", "scale": 1.25,
-                "priority": 1, "rotation": "none"}
-        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp()) as kd:
+        spec = {"output": "HDMI-A-2", "width": 3440, "height": 1440, "refresh": 99.98,
+                "position": "1920,0", "scale": 1.25, "priority": 1, "rotation": "none"}
+        with patch("src.drm.de.kwin._outputs", return_value=json.loads(_KSCREEN_JSON)["outputs"]), \
+             patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp()) as kd:
             assert kwin.restore_outputs({"HDMI-A-2": spec}) is True
         kd.assert_called_once_with([
             "output.HDMI-A-2.enable", "output.HDMI-A-2.mode.3",
@@ -180,8 +186,39 @@ class TestKscreenDoctorBackend:
             "output.HDMI-A-2.rotation.none", "output.HDMI-A-2.priority.1",
         ])
 
+    def test_restore_resolves_renumbered_mode_ids(self):
+        # Regression: KWin renumbered mode ids after the virtual output appeared,
+        # so a saved id "6" (3440x1440@100) restored as 3840x2160@30.
+        spec = {"output": "HDMI-A-1", "width": 3440, "height": 1440, "refresh": 100.0,
+                "position": "0,0", "scale": 2}
+        renumbered = [{"name": "HDMI-A-1", "modes": [
+            {"id": "1", "refreshRate": 49.99, "size": {"width": 3440, "height": 1440}},
+            {"id": "6", "refreshRate": 29.97, "size": {"width": 3840, "height": 2160}},
+            {"id": "9", "refreshRate": 99.98, "size": {"width": 3440, "height": 1440}},
+        ]}]
+        with patch("src.drm.de.kwin._outputs", return_value=renumbered), \
+             patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp()) as kd:
+            kwin.restore_outputs({"HDMI-A-1": spec})
+        assert "output.HDMI-A-1.mode.9" in kd.call_args[0][0]
+
+    def test_restore_falls_back_to_mode_name(self):
+        spec = {"output": "HDMI-A-1", "width": 3440, "height": 1440, "refresh": 99.98,
+                "position": "0,0", "scale": 2}
+        with patch("src.drm.de.kwin._outputs", return_value=None), \
+             patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp()) as kd:
+            kwin.restore_outputs({"HDMI-A-1": spec})
+        assert "output.HDMI-A-1.mode.3440x1440@100" in kd.call_args[0][0]
+
+    def test_restore_legacy_spec_with_mode_id(self):
+        spec = {"output": "HDMI-A-1", "mode": "6", "position": "0,0", "scale": 2}
+        with patch("src.drm.de.kwin._outputs", return_value=[]), \
+             patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp()) as kd:
+            kwin.restore_outputs({"HDMI-A-1": spec})
+        assert "output.HDMI-A-1.mode.6" in kd.call_args[0][0]
+
     def test_restore_outputs_failure_when_no_session(self):
-        spec = {"output": "HDMI-A-2", "mode": "3", "position": "0,0", "scale": 1}
+        spec = {"output": "HDMI-A-2", "width": 3440, "height": 1440, "refresh": 100.0,
+                "position": "0,0", "scale": 1}
         with patch("src.drm.de.kwin.kscreen_doctor", return_value=None):
             assert kwin.restore_outputs({"HDMI-A-2": spec}) is False
 

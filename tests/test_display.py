@@ -23,7 +23,8 @@ def _fail_run(cmd: str = "") -> CompletedProcess:
 def _default_to_legacy_drm_path():
     """Keep existing tests deterministic on Hyprland dev machines."""
     with patch("src.display._use_hyprland_safe_path", return_value=False), \
-         patch("src.display._use_kwin_safe_path", return_value=False):
+         patch("src.display._use_kwin_safe_path", return_value=False), \
+         patch("src.display.notify_hotplug", return_value=True):
         yield
 
 
@@ -397,6 +398,31 @@ class TestConnect:
         lines = (tmp_path / "virt_display.state").read_text().split("\n")
         assert lines[5] == "kwin"
 
+    def test_hotplug_sent_after_enabling_virtual_output(self, tmp_path):
+        # Regression: sysfs status writes emit no uevent, so KWin never saw the
+        # virtual output and Step 7 timed out.
+        order: list[str] = []
+        def run(cmd):
+            if "echo on" in cmd:
+                order.append("on")
+            return _ok_run()
+        def ready(*a, **k):
+            order.append("wait")
+            return (True, "1920x1080")
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.notify_hotplug", side_effect=lambda c: order.append(f"hotplug:{c}")), \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=[]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", side_effect=run), \
+             patch("src.display.wait_for_output_ready", side_effect=ready), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            assert connect(1920, 1080, 60) is True
+        assert order.index("on") < order.index("hotplug:card1") < order.index("wait")
+
 
 class TestDisconnect:
     def _write_state(self, path: Path, card: str, port: str, displays: list[str]) -> None:
@@ -540,6 +566,24 @@ class TestDisconnect:
         mock_kwin.assert_called_once()
         mock_hypr.assert_not_called()
         mock_force.assert_not_called()
+
+    def test_hotplug_sent_after_virtual_output_removed(self, tmp_path):
+        # Regression: without a uevent KWin kept the disconnected virtual
+        # output as an invisible extra screen.
+        (tmp_path / "virt_display.state").write_text(
+            'card1\nDP-1\nHDMI-A-1\n/x/edid_override\n{"HDMI-A-1":{"output":"HDMI-A-1","width":3440,"height":1440,"refresh":100,"position":"0,0","scale":2}}\nkwin'
+        )
+        order: list[str] = []
+        def run(cmd):
+            order.append("edid-clear" if "/dev/null" in cmd else "off" if "echo off" in cmd else cmd)
+            return _ok_run()
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.restore_outputs", return_value=True), \
+             patch("src.display.notify_hotplug", side_effect=lambda c: order.append(f"hotplug:{c}")), \
+             patch("src.display.run_command", side_effect=run):
+            assert disconnect() is True
+        assert order[-1] == "hotplug:card1"
+        assert order.index("off") < order.index("edid-clear") < order.index("hotplug:card1")
 
     def test_kwin_restore_failure_preserves_state(self, tmp_path):
         state = tmp_path / "virt_display.state"
