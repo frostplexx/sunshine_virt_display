@@ -113,8 +113,33 @@ class TestSysfsPortToDrmName:
         assert drm_type == "HDMIA"
         assert type_id == 1
 
+    def test_edp_laptop_panel(self):
+        # Regression for issue #25: "Could not parse port name: eDP-1"
+        assert sysfs_port_to_drm_name("eDP-1") == ("eDP", 1)
+
+    @pytest.mark.parametrize("port,expected", [
+        ("VGA-1", ("VGA", 1)),
+        ("DVI-I-1", ("DVII", 1)),
+        ("DVI-D-2", ("DVID", 2)),
+        ("DVI-A-1", ("DVIA", 1)),
+        ("LVDS-1", ("LVDS", 1)),
+        ("HDMI-B-1", ("HDMIB", 1)),
+        ("DSI-1", ("DSI", 1)),
+        ("DPI-1", ("DPI", 1)),
+        ("Virtual-1", ("VIRTUAL", 1)),
+        ("Writeback-1", ("WRITEBACK", 1)),
+        ("USB-1", ("USB", 1)),
+    ])
+    def test_other_kernel_connector_names(self, port, expected):
+        assert sysfs_port_to_drm_name(port) == expected
+
+    def test_every_mapped_type_is_a_known_drm_type(self):
+        from src.drm.bindings import _CONNECTOR_TYPE_NAMES, _SYSFS_TO_DRM_TYPE
+        known = set(_CONNECTOR_TYPE_NAMES.values())
+        assert set(_SYSFS_TO_DRM_TYPE.values()) <= known
+
     def test_unknown_port(self):
-        drm_type, type_id = sysfs_port_to_drm_name("VGA-1")
+        drm_type, type_id = sysfs_port_to_drm_name("FOO-1")
         assert drm_type is None
         assert type_id is None
 
