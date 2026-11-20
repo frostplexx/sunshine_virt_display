@@ -265,3 +265,64 @@ class TestKwinSessionDiscovery:
     def test_no_socket_returns_none(self, tmp_path):
         with patch("pathlib.Path.iterdir", return_value=iter([])):
             assert kwin._find_wayland_display(1000, str(tmp_path), {}) is None
+
+
+class TestTouchMapping:
+    DEVICES = [
+        {"sysname": "event8", "name": "libvirtualhid Keyboard", "touch": False, "tablet": False, "output": ""},
+        {"sysname": "event11", "name": "libvirtualhid Mouse (Absolute)", "touch": False, "tablet": False, "output": ""},
+        {"sysname": "event12", "name": "libvirtualhid Touchscreen", "touch": True, "tablet": False, "output": ""},
+        {"sysname": "event13", "name": "libvirtualhid Pen Tablet", "touch": False, "tablet": True, "output": ""},
+        {"sysname": "event14", "name": "ELAN Touchscreen", "touch": True, "tablet": False, "output": ""},
+        {"sysname": "event15", "name": "Touch passthrough", "touch": True, "tablet": False, "output": ""},
+    ]
+
+    def test_only_sunshine_touch_and_pen_match(self):
+        matched = [d["sysname"] for d in self.DEVICES if kwin._is_sunshine_pointer_device(d)]
+        # a real built-in touchscreen (ELAN) and keyboards/mice are left alone
+        assert matched == ["event12", "event13", "event15"]
+
+    def test_map_virtual_input_maps_each_device_once(self):
+        with patch("src.drm.de.kwin.input_devices", return_value=self.DEVICES), \
+             patch("src.drm.de.kwin.set_device_output", return_value=True) as setter:
+            n = kwin.map_virtual_input("DP-1", timeout=0.05, interval=0.01)
+        assert n == 3
+        assert sorted(c.args for c in setter.call_args_list) == [
+            ("event12", "DP-1"), ("event13", "DP-1"), ("event15", "DP-1")]
+
+    def test_map_virtual_input_picks_up_late_devices(self):
+        calls = {"n": 0}
+        def devices():
+            calls["n"] += 1
+            return self.DEVICES[:2] if calls["n"] < 3 else self.DEVICES[:3]
+        with patch("src.drm.de.kwin.input_devices", side_effect=devices), \
+             patch("src.drm.de.kwin.set_device_output", return_value=True) as setter:
+            n = kwin.map_virtual_input("DP-1", timeout=0.2, interval=0.01)
+        assert n == 1
+        setter.assert_called_once_with("event12", "DP-1")
+
+    def test_stop_input_mapping_resets_only_our_mapped_devices(self):
+        devs = [dict(d, output="DP-1") for d in self.DEVICES]
+        with patch("src.drm.de.kwin.input_devices", return_value=devs), \
+             patch("src.drm.de.kwin.set_device_output", return_value=True) as setter:
+            kwin.stop_input_mapping()
+        assert sorted(c.args for c in setter.call_args_list) == [
+            ("event12", ""), ("event13", ""), ("event15", "")]
+
+    def test_set_device_output_uses_kwin_dbus(self):
+        with patch("src.drm.de.kwin._run_in_session", return_value=_cp()) as run:
+            assert kwin.set_device_output("event12", "DP-1") is True
+        assert run.call_args[0][0] == ["busctl", "--user", "set-property", "org.kde.KWin",
+                                       "/org/kde/KWin/InputDevice/event12", "org.kde.KWin.InputDevice",
+                                       "outputName", "s", "DP-1"]
+
+    def test_input_devices_parses_busctl_json(self):
+        values = {
+            "devicesSysNames": ["event12"], "name": "libvirtualhid Touchscreen",
+            "touch": True, "tabletTool": False, "outputName": "",
+        }
+        def fake(cmd):
+            return _cp(out=json.dumps({"type": "x", "data": values[cmd[-1]]}))
+        with patch("src.drm.de.kwin._run_in_session", side_effect=fake):
+            assert kwin.input_devices() == [{"sysname": "event12", "name": "libvirtualhid Touchscreen",
+                                             "touch": True, "tablet": False, "output": ""}]

@@ -10,6 +10,8 @@ import pwd
 import shutil
 import stat
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -168,16 +170,13 @@ def find_session() -> dict[str, str] | None:
     return None
 
 
-def kscreen_doctor(args: list[str]) -> subprocess.CompletedProcess[str] | None:
-    """Run kscreen-doctor as the KWin session's user."""
-    if not shutil.which("kscreen-doctor"):
-        return None
+def _run_in_session(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run *cmd* as the KWin session's user with its Wayland/DBus environment."""
     session = find_session()
     if not session:
         return None
 
     env_args = [f"{k}={v}" for k, v in session.items() if k != "user"]
-    cmd = ["kscreen-doctor", *args]
     if os.geteuid() == 0:
         cmd = ["runuser", "-u", session["user"], "--", "env", *env_args, *cmd]
     else:
@@ -185,8 +184,15 @@ def kscreen_doctor(args: list[str]) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired) as e:
-        print(f"    kscreen-doctor failed: {e}")
+        print(f"    {cmd[-1] if cmd else 'command'} failed: {e}")
         return None
+
+
+def kscreen_doctor(args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run kscreen-doctor as the KWin session's user."""
+    if not shutil.which("kscreen-doctor"):
+        return None
+    return _run_in_session(["kscreen-doctor", *args])
 
 
 def _outputs() -> list[dict[str, Any]] | None:
@@ -295,3 +301,95 @@ def restore_outputs(specs: dict[str, dict[str, object]]) -> bool:
     if result and result.returncode != 0:
         print(f"    kscreen-doctor: {result.stderr.strip()}")
     return bool(result and result.returncode == 0)
+
+
+# ---------------------------------------------------------------------------
+# Touch / pen mapping for Sunshine's virtual input devices
+#
+# Sunshine creates its virtual touchscreen and pen when the stream starts.
+# KWin maps touch devices to a physical output, which at that point is the
+# one we just disabled, so every touch is dropped ("Could not find logical
+# output for DrmOutput").  Point those devices at the virtual output via
+# KWin's per-device `outputName` DBus property instead.
+# ---------------------------------------------------------------------------
+
+_KWIN_INPUT = ("org.kde.KWin", "/org/kde/KWin/InputDevice")
+_mapping_stop = threading.Event()
+
+
+def _busctl_get(path: str, iface: str, prop: str) -> Any:
+    result = _run_in_session(["busctl", "--user", "--json=short", "get-property",
+                              _KWIN_INPUT[0], path, iface, prop])
+    if not result or result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout).get("data")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def input_devices() -> list[dict[str, Any]]:
+    """List KWin input devices with name, touch/tablet flags and mapped output."""
+    names = _busctl_get(_KWIN_INPUT[1], "org.kde.KWin.InputDeviceManager", "devicesSysNames")
+    devices: list[dict[str, Any]] = []
+    for sysname in names or []:
+        path = f"{_KWIN_INPUT[1]}/{sysname}"
+        devices.append({
+            "sysname": sysname,
+            "name": _busctl_get(path, "org.kde.KWin.InputDevice", "name") or "",
+            "touch": bool(_busctl_get(path, "org.kde.KWin.InputDevice", "touch")),
+            "tablet": bool(_busctl_get(path, "org.kde.KWin.InputDevice", "tabletTool")),
+            "output": _busctl_get(path, "org.kde.KWin.InputDevice", "outputName") or "",
+        })
+    return devices
+
+
+def _is_sunshine_pointer_device(dev: dict[str, Any]) -> bool:
+    """Sunshine's virtual touchscreen / pen (libvirtualhid, or inputtino's passthrough devices)."""
+    name = dev.get("name", "")
+    ours = name.startswith("libvirtualhid") or "passthrough" in name.lower()
+    return ours and (dev.get("touch") or dev.get("tablet") or "Touch" in name or "Pen" in name)
+
+
+def set_device_output(sysname: str, output: str) -> bool:
+    result = _run_in_session(["busctl", "--user", "set-property", _KWIN_INPUT[0],
+                              f"{_KWIN_INPUT[1]}/{sysname}", "org.kde.KWin.InputDevice",
+                              "outputName", "s", output])
+    return bool(result and result.returncode == 0)
+
+
+def map_virtual_input(output: str, timeout: float = 30.0, interval: float = 0.5) -> int:
+    """
+    Wait for Sunshine's virtual touch/pen devices to appear and map them to
+    *output*.  Returns the number of devices mapped.  Stops early when
+    stop_input_mapping() is called (e.g. on disconnect).
+    """
+    _mapping_stop.clear()
+    mapped: set[str] = set()
+    deadline = time.monotonic() + timeout
+    while not _mapping_stop.is_set():
+        for dev in input_devices():
+            if dev["sysname"] in mapped or not _is_sunshine_pointer_device(dev):
+                continue
+            if dev["output"] == output or set_device_output(dev["sysname"], output):
+                print(f"  ✓ Mapped {dev['name']} to {output}")
+                mapped.add(dev["sysname"])
+        if time.monotonic() >= deadline:
+            break
+        _mapping_stop.wait(interval)
+    return len(mapped)
+
+
+def start_input_mapping(output: str) -> threading.Thread:
+    thread = threading.Thread(target=map_virtual_input, args=(output,), daemon=True,
+                              name="kwin-touch-mapping")
+    thread.start()
+    return thread
+
+
+def stop_input_mapping() -> None:
+    """Stop the watcher and drop our mapping so KWin uses its default again."""
+    _mapping_stop.set()
+    for dev in input_devices():
+        if _is_sunshine_pointer_device(dev) and dev["output"]:
+            _ = set_device_output(dev["sysname"], "")

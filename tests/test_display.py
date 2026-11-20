@@ -24,7 +24,9 @@ def _default_to_legacy_drm_path():
     """Keep existing tests deterministic on Hyprland dev machines."""
     with patch("src.display._use_hyprland_safe_path", return_value=False), \
          patch("src.display._use_kwin_safe_path", return_value=False), \
-         patch("src.display.notify_hotplug", return_value=True):
+         patch("src.display.notify_hotplug", return_value=True), \
+         patch("src.display.kwin.start_input_mapping"), \
+         patch("src.display.kwin.stop_input_mapping"):
         yield
 
 
@@ -398,6 +400,24 @@ class TestConnect:
         lines = (tmp_path / "virt_display.state").read_text().split("\n")
         assert lines[5] == "kwin"
 
+    def test_kwin_connect_maps_touch_to_virtual_output(self, tmp_path):
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.monitor_specs", return_value={"HDMI-A-1": {"output": "HDMI-A-1"}}), \
+             patch("src.display.kwin.disable_outputs", return_value=True), \
+             patch("src.display.kwin.start_input_mapping") as start_map, \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=["HDMI-A-1"]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", return_value=_ok_run()), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "2868x1320")), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            assert connect(2868, 1320, 120) is True
+        start_map.assert_called_once_with("DP-1")
+
     def test_hotplug_sent_after_enabling_virtual_output(self, tmp_path):
         # Regression: sysfs status writes emit no uevent, so KWin never saw the
         # virtual output and Step 7 timed out.
@@ -566,6 +586,17 @@ class TestDisconnect:
         mock_kwin.assert_called_once()
         mock_hypr.assert_not_called()
         mock_force.assert_not_called()
+
+    def test_kwin_disconnect_stops_touch_mapping(self, tmp_path):
+        (tmp_path / "virt_display.state").write_text(
+            'card1\nDP-1\nHDMI-A-1\n\n{"HDMI-A-1":{"output":"HDMI-A-1","width":3440,"height":1440,"refresh":100,"position":"0,0","scale":2}}\nkwin'
+        )
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.restore_outputs", return_value=True), \
+             patch("src.display.kwin.stop_input_mapping") as stop_map, \
+             patch("src.display.run_command", return_value=_ok_run()):
+            assert disconnect() is True
+        stop_map.assert_called_once()
 
     def test_hotplug_sent_after_virtual_output_removed(self, tmp_path):
         # Regression: without a uevent KWin kept the disconnected virtual

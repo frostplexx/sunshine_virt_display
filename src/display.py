@@ -290,6 +290,11 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
         f"{json.dumps(restore_specs)}\n{backend_name or ''}"
     )
 
+    if backend_name == "kwin":
+        # Sunshine's virtual touchscreen/pen appear right after this; map them
+        # to the virtual output instead of the now-hidden physical one.
+        _ = kwin.start_input_mapping(empty_port)
+
     print(f"\n✓ Virtual display successfully connected!")
     print(f"  Port: {card_name}-{empty_port}")
     print(f"  Resolution: {width}x{height}@{refresh_rate}Hz")
@@ -329,6 +334,9 @@ def disconnect() -> bool:
 
     print(f"  Virtual display: {card_name}-{virtual_port}")
     print(f"  Previous displays: {previous_displays if previous_displays else 'None'}")
+
+    if backend_name == "kwin" and backend is not None:
+        kwin.stop_input_mapping()
 
     if backend is not None:
         print(f"\nStep 1: Restoring physical outputs via {backend_name}...")
