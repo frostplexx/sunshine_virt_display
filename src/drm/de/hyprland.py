@@ -2,8 +2,8 @@
 Hyprland-specific display helpers.
 
 Hyprland exposes monitor state and configuration through `hyprctl`.  On
-NVIDIA/Hyprland, direct DRM CRTC manipulation can leave physical outputs stuck
-at 0x0 after disconnect, so the display manager uses these helpers to hide and
+Hyprland (any GPU driver), direct DRM CRTC manipulation can leave physical
+outputs stuck dark or at 0x0 after disconnect, so the display manager uses these helpers to hide and
 restore physical outputs through the compositor instead.
 """
 

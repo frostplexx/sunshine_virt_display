@@ -111,3 +111,120 @@ class TestClearKwinOutputConfig:
                 clear_kwin_output_config("DP-1")
 
         assert "Warning" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# kscreen-doctor backend (issue #31)
+# ---------------------------------------------------------------------------
+
+from subprocess import CompletedProcess  # noqa: E402
+
+from src.drm.de import kwin  # noqa: E402
+
+_KSCREEN_JSON = json.dumps({"outputs": [
+    {"id": 1, "name": "HDMI-A-2", "enabled": True, "connected": True, "currentModeId": "3",
+     "pos": {"x": 1920, "y": 0}, "scale": 1.25, "priority": 1, "rotation": 1},
+    {"id": 2, "name": "DP-2", "enabled": False, "connected": True, "currentModeId": "1",
+     "pos": {"x": 0, "y": 0}, "scale": 1, "priority": 0, "rotation": 1},
+    {"id": 3, "name": "eDP-1", "enabled": True, "connected": True, "currentModeId": "7",
+     "pos": {"x": 0, "y": 0}, "scale": 2, "priority": 2, "rotation": 2},
+]})
+
+
+def _cp(rc=0, out="", err=""):
+    return CompletedProcess(args=[], returncode=rc, stdout=out, stderr=err)
+
+
+class TestKscreenDoctorBackend:
+    def test_monitor_specs_captures_restore_state(self):
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out=_KSCREEN_JSON)):
+            specs = kwin.monitor_specs(["HDMI-A-2", "eDP-1"])
+        assert specs["HDMI-A-2"] == {"output": "HDMI-A-2", "mode": "3", "position": "1920,0",
+                                     "scale": 1.25, "priority": 1, "rotation": "none"}
+        assert specs["eDP-1"]["rotation"] == "left"
+        assert specs["eDP-1"]["priority"] == 2
+
+    def test_monitor_specs_skips_disabled_and_unrequested(self):
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out=_KSCREEN_JSON)):
+            assert kwin.monitor_specs(["DP-2"]) == {}
+
+    def test_available_false_without_session(self):
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=None):
+            assert kwin.available() is False
+
+    def test_available_false_on_bad_json(self):
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out="not json")):
+            assert kwin.available() is False
+
+    def test_available_true(self):
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out=_KSCREEN_JSON)):
+            assert kwin.available() is True
+
+    def test_disable_outputs_is_one_atomic_call(self):
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp()) as kd:
+            assert kwin.disable_outputs(["HDMI-A-2", "eDP-1"]) is True
+        kd.assert_called_once_with(["output.HDMI-A-2.disable", "output.eDP-1.disable"])
+
+    def test_disable_outputs_failure(self):
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(rc=1, err="boom")):
+            assert kwin.disable_outputs(["HDMI-A-2"]) is False
+
+    def test_restore_outputs_builds_full_command(self):
+        spec = {"output": "HDMI-A-2", "mode": "3", "position": "1920,0", "scale": 1.25,
+                "priority": 1, "rotation": "none"}
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp()) as kd:
+            assert kwin.restore_outputs({"HDMI-A-2": spec}) is True
+        kd.assert_called_once_with([
+            "output.HDMI-A-2.enable", "output.HDMI-A-2.mode.3",
+            "output.HDMI-A-2.position.1920,0", "output.HDMI-A-2.scale.1.25",
+            "output.HDMI-A-2.rotation.none", "output.HDMI-A-2.priority.1",
+        ])
+
+    def test_restore_outputs_failure_when_no_session(self):
+        spec = {"output": "HDMI-A-2", "mode": "3", "position": "0,0", "scale": 1}
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=None):
+            assert kwin.restore_outputs({"HDMI-A-2": spec}) is False
+
+    def test_kscreen_doctor_runs_as_session_user_when_root(self):
+        session = {"user": "alice", "XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-0"}
+        with patch("shutil.which", return_value="/usr/bin/kscreen-doctor"), \
+             patch("src.drm.de.kwin.find_session", return_value=session), \
+             patch("os.geteuid", return_value=0), \
+             patch("subprocess.run", return_value=_cp()) as run:
+            kwin.kscreen_doctor(["-j"])
+        cmd = run.call_args[0][0]
+        assert cmd[:4] == ["runuser", "-u", "alice", "--"]
+        assert "WAYLAND_DISPLAY=wayland-0" in cmd
+        assert cmd[-2:] == ["kscreen-doctor", "-j"]
+
+    def test_kscreen_doctor_missing_binary(self):
+        with patch("shutil.which", return_value=None):
+            assert kwin.kscreen_doctor(["-j"]) is None
+
+
+class TestKwinSessionDiscovery:
+    def test_empty_outputs_means_unavailable(self):
+        # kscreen-doctor exits 0 with no outputs when it can't reach KWin
+        empty = json.dumps({"outputs": [], "screen": {}})
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out=empty)):
+            assert kwin.available() is False
+
+    def test_wayland_display_from_kwin_env_wins(self, tmp_path):
+        assert kwin._find_wayland_display(1000, str(tmp_path), {"WAYLAND_DISPLAY": "wayland-3"}) == "wayland-3"
+
+    def test_wayland_display_falls_back_to_runtime_socket(self, tmp_path):
+        # kwin_wayland's own environ has no WAYLAND_DISPLAY (wrapper passes the fd);
+        # with no session client found, use the real socket — not a guessed wayland-0
+        import socket
+        sock = socket.socket(socket.AF_UNIX)
+        sock.bind(str(tmp_path / "wayland-1"))
+        (tmp_path / "wayland-1.lock").write_text("")
+        try:
+            with patch("pathlib.Path.iterdir", return_value=iter([])):
+                assert kwin._find_wayland_display(1000, str(tmp_path), {}) == "wayland-1"
+        finally:
+            sock.close()
+
+    def test_no_socket_returns_none(self, tmp_path):
+        with patch("pathlib.Path.iterdir", return_value=iter([])):
+            assert kwin._find_wayland_display(1000, str(tmp_path), {}) is None

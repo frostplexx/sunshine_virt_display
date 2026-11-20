@@ -19,28 +19,46 @@ from src.drm import (
     wait_for_output_ready,
 )
 from src.drm.de import hyprland
+from src.drm.de import kwin
 from src.drm.de.kwin import clear_kwin_output_config
 from src.edid import create_edid, find_best_vic_resolution, get_pixel_clock_info
 
 SCRIPT_DIR = Path(__file__).parent.parent.absolute()
 
 
-def _card_driver(card_name: str) -> str:
-    """Return the kernel driver/module name for a DRM card, if known."""
-    driver = Path(f"/sys/class/drm/{card_name}/device/driver")
-    try:
-        return driver.resolve().name.lower()
-    except OSError:
-        return ""
-
-
 def _use_hyprland_safe_path(card_name: str) -> bool:
     """
-    On NVIDIA + Hyprland, direct DRM CRTC stealing/reassignment can leave a
-    physical output stuck at 0x0 after Sunshine disconnects. Prefer compositor
-    monitor commands there; keep the old DRM path for other compositors/drivers.
+    On Hyprland, direct DRM CRTC stealing/reassignment bypasses the
+    compositor's own atomic modeset state: Hyprland never picks up a CRTC we
+    set behind its back, so physical outputs stay dark after disconnect.
+    This is independent of the GPU driver (seen on both NVIDIA and amdgpu,
+    issue #31), so always prefer compositor monitor commands under Hyprland
+    and keep the direct DRM path for other compositors.
     """
-    return "nvidia" in _card_driver(card_name) and hyprland.available()
+    return hyprland.available()
+
+
+def _use_kwin_safe_path(card_name: str) -> bool:
+    """
+    KWin has the same problem as Hyprland: it never adopts a CRTC forced
+    behind its back, so physical outputs stay dark after disconnect
+    (issue #31).  Use kscreen-doctor when a KWin Wayland session is reachable.
+    """
+    return kwin.available()
+
+
+# Compositor backends that can hide/restore outputs without direct DRM
+# CRTC manipulation.  Each module provides monitor_specs(), disable_outputs()
+# and restore_outputs().
+_SAFE_BACKENDS = {"hyprland": hyprland, "kwin": kwin}
+
+
+def _select_safe_backend(card_name: str) -> str | None:
+    if _use_hyprland_safe_path(card_name):
+        return "hyprland"
+    if _use_kwin_safe_path(card_name):
+        return "kwin"
+    return None
 
 
 def connect(width: int, height: int, refresh_rate: int, device: str | None = None) -> bool:
@@ -180,18 +198,20 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
 
     print(f"  ✓ EDID override applied")
 
-    hyprland_safe = _use_hyprland_safe_path(card_name)
-    hyprland_restore_specs: dict[str, dict[str, object]] = {}
+    backend_name = _select_safe_backend(card_name)
+    backend = _SAFE_BACKENDS[backend_name] if backend_name else None
+    safe_path = backend is not None
+    restore_specs: dict[str, dict[str, object]] = {}
 
-    if hyprland_safe:
-        print("\nStep 5: NVIDIA/Hyprland detected — using compositor-safe monitor toggles")
-        hyprland_restore_specs = hyprland.monitor_specs(connected_displays)
-        missing_specs = sorted(set(connected_displays) - set(hyprland_restore_specs))
+    if backend is not None:
+        print(f"\nStep 5: {backend_name} detected — using compositor-safe monitor toggles")
+        restore_specs = backend.monitor_specs(connected_displays)
+        missing_specs = sorted(set(connected_displays) - set(restore_specs))
         if missing_specs:
-            print(f"  Error: Could not capture Hyprland restore state for: {', '.join(missing_specs)}")
+            print(f"  Error: Could not capture {backend_name} restore state for: {', '.join(missing_specs)}")
             print("  Refusing to hide physical outputs without a known-good restore plan")
             return False
-        print("  Physical outputs will be hidden via Hyprland, not by stealing DRM CRTCs")
+        print(f"  Physical outputs will be hidden via {backend_name}, not by stealing DRM CRTCs")
     else:
         # Turn off all connected displays and explicitly release their CRTCs.
         # On AMD, echo off > status marks the connector disconnected in sysfs but
@@ -221,14 +241,14 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
     print(f"  ✓ Virtual display enabled on {empty_port}")
 
     # Step 7: Wait for compositor to assign CRTC naturally, then fall back to forcing.
-    # Do not force with direct DRM on NVIDIA/Hyprland; that is the path that can
+    # Do not force with direct DRM under Hyprland/KWin; that is the path that can
     # leave physical monitors stuck at 0x0 after disconnect.
     print(f"\nStep 7: Waiting for output to be ready...")
     ready, mode = wait_for_output_ready(card_name, empty_port, width, height, timeout=5.0)
 
     if ready:
         print(f"  ✓ Output ready ({mode})")
-    elif hyprland_safe:
+    elif safe_path:
         print("  ✗ Timed out waiting for virtual output; refusing to hide physical outputs")
         _ = run_command(f"sh -c 'echo off > /sys/class/drm/{card_name}-{empty_port}/status'")
         _ = run_command(f"sh -c 'cat /dev/null > {edid_override_path}'")
@@ -242,9 +262,9 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
         else:
             print(f"  ⚠ Timed out waiting for output, proceeding anyway")
 
-    if hyprland_safe and connected_displays:
-        print("\nStep 8: Hiding physical outputs via Hyprland...")
-        if hyprland.disable_outputs(connected_displays):
+    if backend is not None and connected_displays:
+        print(f"\nStep 8: Hiding physical outputs via {backend_name}...")
+        if backend.disable_outputs(connected_displays):
             print(f"  ✓ Hidden: {', '.join(connected_displays)}")
         else:
             print("  ✗ Could not hide one or more physical outputs — cleaning up virtual display")
@@ -253,11 +273,12 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
             return False
 
     # Save state for disconnect (line 4 = edid_override_path for cleanup,
-    # line 5 = Hyprland restore JSON when compositor-safe path was used)
+    # line 5 = compositor restore JSON when compositor-safe path was used,
+    # line 6 = which compositor backend produced it)
     state_file = SCRIPT_DIR / "virt_display.state"
     _ = state_file.write_text(
         f"{card_name}\n{empty_port}\n{','.join(connected_displays)}\n{edid_override_path}\n"
-        f"{json.dumps(hyprland_restore_specs)}"
+        f"{json.dumps(restore_specs)}\n{backend_name or ''}"
     )
 
     print(f"\n✓ Virtual display successfully connected!")
@@ -289,20 +310,23 @@ def disconnect() -> bool:
     virtual_port = state_data[1]
     previous_displays = state_data[2].split(",") if len(state_data) > 2 and state_data[2] else []
     try:
-        hyprland_restore_specs = json.loads(state_data[4]) if len(state_data) > 4 and state_data[4] else {}
+        restore_specs = json.loads(state_data[4]) if len(state_data) > 4 and state_data[4] else {}
     except json.JSONDecodeError:
-        hyprland_restore_specs = {}
-    hyprland_safe = bool(hyprland_restore_specs)
+        restore_specs = {}
+    # State files written before the KWin backend existed have no line 6;
+    # restore specs there always came from Hyprland.
+    backend_name = (state_data[5] if len(state_data) > 5 and state_data[5] else "hyprland")
+    backend = _SAFE_BACKENDS.get(backend_name) if restore_specs else None
 
     print(f"  Virtual display: {card_name}-{virtual_port}")
     print(f"  Previous displays: {previous_displays if previous_displays else 'None'}")
 
-    if hyprland_safe:
-        print("\nStep 1: Restoring physical outputs via Hyprland...")
-        if hyprland.restore_outputs(hyprland_restore_specs):
-            print(f"  ✓ Restored: {', '.join(hyprland_restore_specs.keys())}")
+    if backend is not None:
+        print(f"\nStep 1: Restoring physical outputs via {backend_name}...")
+        if backend.restore_outputs(restore_specs):
+            print(f"  ✓ Restored: {', '.join(restore_specs.keys())}")
         else:
-            print("\n✗ Hyprland restore failed — state file preserved so disconnect can be retried")
+            print(f"\n✗ {backend_name} restore failed — state file preserved so disconnect can be retried")
             return False
     else:
         # Turn on physical displays FIRST — avoid a zero-output window
