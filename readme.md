@@ -9,7 +9,7 @@ It runs as a persistent daemon and automatically manages display connections by 
 
 v2 replaces the shell script with a persistent daemon. Three things to do when upgrading:
 
-**1. Update your Sunshine commands.** The old `virt_display.sh --connect ...` commands no longer exist. Replace them with the socket-based commands in the [Configure Sunshine](#configure-sunshine) section below.
+**1. Update your Sunshine commands.** The old `virt_display.sh --connect ...` commands no longer exist. The installer adds the socket-based commands automatically. If you configured Sunshine manually, replace them with the commands in the [Configure Sunshine](#configure-sunshine) section below.
 
 **2. Remove the old sudoers entry.** v1 required a `NOPASSWD` rule for `python3 main.py`. It is no longer needed — delete it:
 
@@ -67,9 +67,24 @@ git pull
 sudo ./install.sh
 ```
 
+### Uninstall
+
+```bash
+sudo ./uninstall.sh
+```
+
+This stops and removes the service and `/opt/sunshine-vd`, and removes the Do/Undo command from the Sunshine config. Add `--keep-sunshine-config` to leave the Sunshine config unchanged.
+
 ## Configure Sunshine
 
 The daemon listens on `/tmp/sunshineVD.sock`. Sunshine talks to it by writing comma-separated arguments to that socket.
+
+The installer adds the commands to `global_prep_cmd` in your Sunshine config automatically. It prefers `socat`; it uses `nc` only when `nc -U` is supported. It writes a backup to `sunshine.conf.bak` and leaves the file unchanged when it cannot parse the existing `global_prep_cmd` entry.
+
+- `sudo ./install.sh --no-sunshine-config` skips the automatic setup.
+- `sudo ./install.sh --sunshine-config /path/to/sunshine.conf` uses a custom config file.
+
+If the automatic setup is skipped or fails, set the commands manually. Flatpak Sunshine is not supported because `nc` and `socat` are not available inside the sandbox.
 
 In Sunshine's **General** tab, set:
 
