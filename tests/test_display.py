@@ -7,9 +7,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from src.display import connect, disconnect, kwin_session_pid
-from src.display import _use_hyprland_safe_path as _real_use_hyprland_safe_path
-from src.display import _use_kwin_safe_path as _real_use_kwin_safe_path
+from src.display import _select_safe_backend, connect, disconnect, kwin_session_pid
 
 
 def _ok_run(cmd: str = "") -> CompletedProcess:
@@ -23,8 +21,8 @@ def _fail_run(cmd: str = "") -> CompletedProcess:
 @pytest.fixture(autouse=True)
 def _default_to_legacy_drm_path():
     """Keep existing tests deterministic on Hyprland dev machines."""
-    with patch("src.display._use_hyprland_safe_path", return_value=False), \
-         patch("src.display._use_kwin_safe_path", return_value=False), \
+    with patch("src.display.hyprland.available", return_value=False), \
+         patch("src.display.kwin.available", return_value=False), \
          patch("src.display.notify_hotplug", return_value=True), \
          patch("src.display.kwin.start_input_mapping"), \
          patch("src.display.kwin.stop_input_mapping"), \
@@ -33,26 +31,21 @@ def _default_to_legacy_drm_path():
         yield
 
 
-class TestHyprlandSafePathGate:
-    """Regression for issue #31: AMD + Hyprland must not use direct DRM CRTC stealing."""
+class TestBackendSelection:
+    def test_hyprland_wins_when_both_are_reachable(self):
+        with patch("src.display.hyprland.available", return_value=True), \
+             patch("src.display.kwin.available", return_value=True):
+            assert _select_safe_backend() == "hyprland"
 
-    def test_hyprland_on_amdgpu_uses_safe_path(self):
-        with patch("src.display.hyprland.available", return_value=True):
-            assert _real_use_hyprland_safe_path() is True
+    def test_kwin_when_hyprland_is_absent(self):
+        with patch("src.display.hyprland.available", return_value=False), \
+             patch("src.display.kwin.available", return_value=True):
+            assert _select_safe_backend() == "kwin"
 
-    def test_hyprland_on_nvidia_uses_safe_path(self):
-        with patch("src.display.hyprland.available", return_value=True):
-            assert _real_use_hyprland_safe_path() is True
-
-    def test_non_hyprland_uses_legacy_drm_path(self):
-        with patch("src.display.hyprland.available", return_value=False):
-            assert _real_use_hyprland_safe_path() is False
-
-    def test_kwin_gate_follows_kwin_availability(self):
-        with patch("src.display.kwin.available", return_value=True):
-            assert _real_use_kwin_safe_path() is True
-        with patch("src.display.kwin.available", return_value=False):
-            assert _real_use_kwin_safe_path() is False
+    def test_direct_path_when_no_compositor_is_reachable(self):
+        with patch("src.display.hyprland.available", return_value=False), \
+             patch("src.display.kwin.available", return_value=False):
+            assert _select_safe_backend() is None
 
 
 class TestConnect:
@@ -325,7 +318,7 @@ class TestConnect:
         mock_force = MagicMock(return_value=True)
 
         with patch("src.display.SCRIPT_DIR", tmp_path), \
-             patch("src.display._use_hyprland_safe_path", return_value=True), \
+             patch("src.display.hyprland.available", return_value=True), \
              patch("src.display.hyprland.monitor_specs", return_value=restore_specs), \
              patch("src.display.hyprland.disable_outputs", return_value=True) as mock_disable, \
              patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
@@ -352,7 +345,7 @@ class TestConnect:
     def test_nvidia_hyprland_safe_path_refuses_without_restore_specs(self, tmp_path):
         mock_run = MagicMock(return_value=_ok_run())
         with patch("src.display.SCRIPT_DIR", tmp_path), \
-             patch("src.display._use_hyprland_safe_path", return_value=True), \
+             patch("src.display.hyprland.available", return_value=True), \
              patch("src.display.hyprland.monitor_specs", return_value={}), \
              patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
              patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:01:00.0")]), \
@@ -376,7 +369,7 @@ class TestConnect:
         mock_run = MagicMock(return_value=_ok_run())
 
         with patch("src.display.SCRIPT_DIR", tmp_path), \
-             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.available", return_value=True), \
              patch("src.display.kwin.monitor_specs", return_value=restore_specs), \
              patch("src.display.kwin.disable_outputs", return_value=True) as mock_disable, \
              patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
@@ -403,7 +396,7 @@ class TestConnect:
 
     def test_kwin_connect_maps_touch_to_virtual_output(self, tmp_path):
         with patch("src.display.SCRIPT_DIR", tmp_path), \
-             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.available", return_value=True), \
              patch("src.display.kwin.monitor_specs", return_value={"HDMI-A-1": {"output": "HDMI-A-1"}}), \
              patch("src.display.kwin.disable_outputs", return_value=True), \
              patch("src.display.kwin.start_input_mapping") as start_map, \
@@ -425,7 +418,7 @@ class TestConnect:
             "eDP-1": {"output": "eDP-1", "enabled": False},
         }
         with patch("src.display.SCRIPT_DIR", tmp_path), \
-             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.available", return_value=True), \
              patch("src.display.kwin.monitor_specs", return_value=specs), \
              patch("src.display.kwin.disable_outputs", return_value=True) as disable, \
              patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
@@ -446,7 +439,7 @@ class TestConnect:
     def test_kwin_missing_restore_state_clears_edid_override(self, tmp_path):
         mock_run = MagicMock(return_value=_ok_run())
         with patch("src.display.SCRIPT_DIR", tmp_path), \
-             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.available", return_value=True), \
              patch("src.display.kwin.monitor_specs", return_value={}), \
              patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
              patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
@@ -462,7 +455,7 @@ class TestConnect:
 
     def test_kwin_connect_restarts_keyboard(self, tmp_path):
         with patch("src.display.SCRIPT_DIR", tmp_path), \
-             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.available", return_value=True), \
              patch("src.display.kwin.monitor_specs", return_value={"HDMI-A-1": {"output": "HDMI-A-1"}}), \
              patch("src.display.kwin.disable_outputs", return_value=True), \
              patch("src.display.kwin.restart_virtual_keyboard_later") as restart_kb, \
@@ -480,7 +473,7 @@ class TestConnect:
 
     def test_kwin_connect_records_the_compositor_pid(self, tmp_path):
         with patch("src.display.SCRIPT_DIR", tmp_path), \
-             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.available", return_value=True), \
              patch("src.display.kwin.monitor_specs", return_value={"HDMI-A-1": {"output": "HDMI-A-1"}}), \
              patch("src.display.kwin.disable_outputs", return_value=True), \
              patch("src.display.kwin.find_kwin_pid", return_value=1359), \
