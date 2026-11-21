@@ -125,6 +125,27 @@ def _find_compositor_pid_and_fd(card_path: str) -> tuple[int, int] | tuple[None,
 # ---------------------------------------------------------------------------
 
 
+def _set_master(fd: int) -> None:
+    _ = fcntl.ioctl(fd, DRM_IOCTL_SET_MASTER, 0)
+
+
+def _drop_master(fd: int) -> None:
+    try:
+        _ = fcntl.ioctl(fd, DRM_IOCTL_DROP_MASTER, 0)
+    except OSError:
+        pass
+
+
+def _run_with_master(fd: int, callback: Callable[[int], T]) -> T:
+    """Acquire DRM master on *fd*, run callback(fd), then drop it again."""
+    _set_master(fd)
+    print("    DRM master acquired successfully")
+    try:
+        return callback(fd)
+    finally:
+        _drop_master(fd)
+
+
 def with_drm_master(card_path: str, callback: Callable[[int], T]) -> T:
     """
     Temporarily acquire DRM master, run callback(fd), then restore master
@@ -138,22 +159,17 @@ def with_drm_master(card_path: str, callback: Callable[[int], T]) -> T:
     our_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
     try:
         try:
-            _ = fcntl.ioctl(our_fd, DRM_IOCTL_SET_MASTER, 0)
+            _set_master(our_fd)
+        except OSError as e:
+            print(f"    Direct SET_MASTER failed: {e} -- using pidfd path")
+        else:
             print("    Direct SET_MASTER succeeded (no compositor holding master)")
             try:
                 return callback(our_fd)
             finally:
-                try:
-                    _ = fcntl.ioctl(our_fd, DRM_IOCTL_DROP_MASTER, 0)
-                except OSError:
-                    pass
-        except OSError as e:
-            print(f"    Direct SET_MASTER failed: {e} -- using pidfd path")
-    except Exception:
+                _drop_master(our_fd)
+    finally:
         os.close(our_fd)
-        raise
-
-    os.close(our_fd)
 
     # Find the compositor's DRM fd
     comp_pid, comp_fd_num = _find_compositor_pid_and_fd(card_path)
@@ -178,16 +194,7 @@ def with_drm_master(card_path: str, callback: Callable[[int], T]) -> T:
         # Now open our own fd and acquire master
         our_fd = os.open(card_path, os.O_RDWR | os.O_CLOEXEC)
         try:
-            _ = fcntl.ioctl(our_fd, DRM_IOCTL_SET_MASTER, 0)
-            print("    DRM master acquired successfully")
-            try:
-                return callback(our_fd)
-            finally:
-                # Drop our master
-                try:
-                    _ = fcntl.ioctl(our_fd, DRM_IOCTL_DROP_MASTER, 0)
-                except OSError:
-                    pass
+            return _run_with_master(our_fd, callback)
         finally:
             os.close(our_fd)
     finally:

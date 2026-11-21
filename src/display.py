@@ -257,7 +257,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
     # Do not force with direct DRM under Hyprland/KWin; that is the path that can
     # leave physical monitors stuck at 0x0 after disconnect.
     print(f"\nStep 7: Waiting for output to be ready...")
-    ready, mode = wait_for_output_ready(card_name, empty_port, width, height, timeout=5.0)
+    ready, mode = wait_for_output_ready(card_name, empty_port, timeout=5.0)
 
     if ready:
         print(f"  ✓ Output ready ({mode})")
@@ -270,7 +270,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
     else:
         print(f"  ⚠ Compositor did not assign CRTC — forcing assignment...")
         _ = force_crtc_assignment(card_name, empty_port)
-        ready, mode = wait_for_output_ready(card_name, empty_port, width, height, timeout=5.0)
+        ready, mode = wait_for_output_ready(card_name, empty_port, timeout=5.0)
         if ready:
             print(f"  ✓ Output ready ({mode})")
         else:
@@ -476,7 +476,7 @@ def disconnect() -> bool:
 
                 ok = force_crtc_assignment(card_name, disp)
                 if ok:
-                    ready, mode = wait_for_output_ready(card_name, disp, 0, 0, timeout=5.0)
+                    ready, mode = wait_for_output_ready(card_name, disp, timeout=5.0)
                     if ready:
                         print(f"  ✓ {disp} restored ({mode})")
                         restored = True
