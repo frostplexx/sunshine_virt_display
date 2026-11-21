@@ -29,7 +29,7 @@ class TestWatchPid:
     def test_disconnects_when_watched_process_exits(self, connected_state):
         proc = _exited_child()
         with patch.object(daemon.display, "disconnect", return_value=True) as disc:
-            t = threading.Thread(target=daemon._watch_kwin_pid, args=(proc.pid,))
+            t = threading.Thread(target=daemon._watch_pid, args=(proc.pid, "KWin"))
             t.start()
             proc.kill(); proc.wait()
             t.join(timeout=5)
@@ -51,8 +51,8 @@ class TestWatchPid:
         kwin_proc, sunshine_proc = _exited_child(), _exited_child()
         with patch.object(daemon.display, "disconnect", return_value=True) as disc:
             threads = [
-                threading.Thread(target=daemon._watch_kwin_pid, args=(kwin_proc.pid,)),
-                threading.Thread(target=daemon._watch_sunshine_pid, args=(sunshine_proc.pid,)),
+                threading.Thread(target=daemon._watch_pid, args=(kwin_proc.pid, "KWin")),
+                threading.Thread(target=daemon._watch_pid, args=(sunshine_proc.pid, "Sunshine")),
             ]
             for t in threads:
                 t.start()
@@ -67,7 +67,7 @@ class TestWatchPid:
         # KWin watcher must still be able to finish the job afterwards.
         proc = _exited_child()
         with patch.object(daemon.display, "disconnect", return_value=False):
-            t = threading.Thread(target=daemon._watch_sunshine_pid, args=(proc.pid,))
+            t = threading.Thread(target=daemon._watch_pid, args=(proc.pid, "Sunshine"))
             t.start()
             proc.kill(); proc.wait()
             t.join(timeout=5)
