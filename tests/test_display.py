@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from src.display import connect, disconnect
+from src.display import connect, disconnect, kwin_session_pid
 from src.display import _use_hyprland_safe_path as _real_use_hyprland_safe_path
 from src.display import _use_kwin_safe_path as _real_use_kwin_safe_path
 
@@ -477,6 +477,51 @@ class TestConnect:
              patch("src.display.create_edid", return_value=b"\x00" * 256):
             assert connect(2868, 1320, 120) is True
         restart_kb.assert_called_once()
+
+    def test_kwin_connect_records_the_compositor_pid(self, tmp_path):
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.monitor_specs", return_value={"HDMI-A-1": {"output": "HDMI-A-1"}}), \
+             patch("src.display.kwin.disable_outputs", return_value=True), \
+             patch("src.display.kwin.find_kwin_pid", return_value=1359), \
+             patch("src.display.kwin.start_input_mapping"), \
+             patch("src.display.kwin.restart_virtual_keyboard_later") as restart_kb, \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=["HDMI-A-1"]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", return_value=_ok_run()), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "2868x1320")), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            assert connect(2868, 1320, 120) is True
+        lines = (tmp_path / "virt_display.state").read_text().split("\n")
+        assert lines[6] == "1359"
+        restart_kb.assert_called_once_with(kwin_pid=1359)
+
+    def test_kwin_logout_checks_the_recorded_pid(self, tmp_path):
+        (tmp_path / "virt_display.state").write_text(
+            "card1\nDP-1\nHDMI-A-1\n/x/edid_override\n"
+            '{"HDMI-A-1":{"output":"HDMI-A-1","width":3440,"height":1440,'
+            '"refresh":100,"position":"0,0","scale":2}}\nkwin\n1359')
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.restore_outputs", return_value=False), \
+             patch("src.display.kwin.session_alive", return_value=False) as alive, \
+             patch("src.display.kwin.restart_virtual_keyboard_later") as restart_kb, \
+             patch("src.display.run_command", return_value=_ok_run()):
+            assert disconnect() is True
+        alive.assert_called_once_with(1359)
+        restart_kb.assert_called_once_with(kwin_pid=1359)
+
+    def test_kwin_session_pid(self, tmp_path):
+        state = tmp_path / "virt_display.state"
+        state.write_text("card1\nDP-1\n\n\n{}\nkwin\n1359")
+        with patch("src.display.SCRIPT_DIR", tmp_path):
+            assert kwin_session_pid() == 1359
+        state.write_text("card1\nDP-1\n\n\n{}\nkwin")
+        with patch("src.display.SCRIPT_DIR", tmp_path):
+            assert kwin_session_pid() is None
 
     def test_legacy_connect_does_not_restart_keyboard(self, tmp_path):
         with patch("src.display.SCRIPT_DIR", tmp_path), \
