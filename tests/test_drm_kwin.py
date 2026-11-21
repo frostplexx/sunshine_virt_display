@@ -143,15 +143,36 @@ class TestKscreenDoctorBackend:
     def test_monitor_specs_captures_restore_state(self):
         with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out=_KSCREEN_JSON)):
             specs = kwin.monitor_specs(["HDMI-A-2", "eDP-1"])
-        assert specs["HDMI-A-2"] == {"output": "HDMI-A-2", "width": 3440, "height": 1440,
+        assert specs["HDMI-A-2"] == {"output": "HDMI-A-2", "enabled": True,
+                                     "width": 3440, "height": 1440,
                                      "refresh": 99.98, "position": "1920,0",
                                      "scale": 1.25, "priority": 1, "rotation": "none"}
         assert specs["eDP-1"]["rotation"] == "left"
         assert specs["eDP-1"]["priority"] == 2
+        assert specs["eDP-1"]["enabled"] is True
 
-    def test_monitor_specs_skips_disabled_and_unrequested(self):
+    def test_monitor_specs_records_disabled_outputs(self):
+        # Regression: a connected output that the user disabled in KWin must
+        # not abort the connect, and must stay disabled after disconnect.
         with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out=_KSCREEN_JSON)):
-            assert kwin.monitor_specs(["DP-2"]) == {}
+            assert kwin.monitor_specs(["DP-2"]) == {"DP-2": {"output": "DP-2", "enabled": False}}
+
+    def test_monitor_specs_skips_unrequested_outputs(self):
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out=_KSCREEN_JSON)):
+            assert kwin.monitor_specs(["HDMI-A-9"]) == {}
+
+    @pytest.mark.parametrize("rotation,keyword", [
+        (16, "flipped"), (32, "flipped90"), (64, "flipped180"), (128, "flipped270"),
+    ])
+    def test_monitor_specs_keeps_flipped_rotations(self, rotation, keyword):
+        data = json.dumps({"outputs": [{
+            "name": "DP-1", "enabled": True, "currentModeId": "1",
+            "modes": [{"id": "1", "refreshRate": 60.0, "size": {"width": 1920, "height": 1080}}],
+            "pos": {"x": 0, "y": 0}, "scale": 1, "priority": 1, "rotation": rotation,
+        }]})
+        with patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp(out=data)):
+            specs = kwin.monitor_specs(["DP-1"])
+        assert specs["DP-1"]["rotation"] == keyword
 
     def test_available_false_without_session(self):
         with patch("src.drm.de.kwin.kscreen_doctor", return_value=None):
@@ -215,6 +236,12 @@ class TestKscreenDoctorBackend:
              patch("src.drm.de.kwin.kscreen_doctor", return_value=_cp()) as kd:
             kwin.restore_outputs({"HDMI-A-1": spec})
         assert "output.HDMI-A-1.mode.6" in kd.call_args[0][0]
+
+    def test_restore_skips_disabled_outputs(self):
+        disabled = {"DP-2": {"output": "DP-2", "enabled": False}}
+        with patch("src.drm.de.kwin.kscreen_doctor") as kd:
+            assert kwin.restore_outputs(disabled) is True
+        kd.assert_not_called()
 
     def test_restore_outputs_failure_when_no_session(self):
         spec = {"output": "HDMI-A-2", "width": 3440, "height": 1440, "refresh": 100.0,

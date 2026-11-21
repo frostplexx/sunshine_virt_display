@@ -78,7 +78,10 @@ def clear_kwin_output_config(port: str) -> None:
 # ---------------------------------------------------------------------------
 
 # libkscreen rotation enum -> kscreen-doctor rotation keyword
-_ROTATIONS: dict[int, str] = {1: "none", 2: "left", 4: "inverted", 8: "right"}
+_ROTATIONS: dict[int, str] = {
+    1: "none", 2: "left", 4: "inverted", 8: "right",
+    16: "flipped", 32: "flipped90", 64: "flipped180", 128: "flipped270",
+}
 
 
 def _read_environ(proc: Path) -> dict[str, str]:
@@ -218,8 +221,9 @@ def _outputs() -> list[dict[str, Any]] | None:
     except json.JSONDecodeError:
         return None
     outputs = data.get("outputs") if isinstance(data, dict) else None
-    # kscreen-doctor exits 0 with an empty list when it couldn't reach the
-    # compositor (e.g. wrong WAYLAND_DISPLAY) — treat that as unavailable.
+    # No outputs means there is nothing to hide or restore.  An unreachable
+    # session produces no config at all and hits the timeout in
+    # _run_in_session, so it is already handled above.
     return outputs if isinstance(outputs, list) and outputs else None
 
 
@@ -229,12 +233,23 @@ def available() -> bool:
 
 
 def monitor_specs(outputs: list[str]) -> dict[str, dict[str, object]]:
-    """Capture enough KWin output state to restore *outputs* later."""
+    """
+    Capture enough KWin output state to restore *outputs* later.
+
+    A connected output that is disabled in KWin is recorded with
+    ``enabled: False``.  It is already hidden and must stay hidden, so the
+    display manager must not try to hide or restore it (for example the
+    internal panel in an "external monitor only" profile).  Specs written by
+    older versions have no ``enabled`` key and are treated as enabled.
+    """
     wanted = set(outputs)
     specs: dict[str, dict[str, object]] = {}
     for out in _outputs() or []:
         name = out.get("name")
-        if name not in wanted or not out.get("enabled"):
+        if name not in wanted:
+            continue
+        if not out.get("enabled"):
+            specs[name] = {"output": name, "enabled": False}
             continue
         mode_id = out.get("currentModeId")
         current = next((m for m in out.get("modes") or [] if str(m.get("id")) == str(mode_id)), None)
@@ -247,6 +262,7 @@ def monitor_specs(outputs: list[str]) -> dict[str, dict[str, object]]:
         # resolve it to an id again at restore time.
         spec: dict[str, object] = {
             "output": name,
+            "enabled": True,
             "width": int(size["width"]),
             "height": int(size["height"]),
             "refresh": float(current.get("refreshRate", 0)),
@@ -295,11 +311,12 @@ def _resolve_mode(spec: dict[str, object], outputs: list[dict[str, Any]]) -> str
 
 def restore_outputs(specs: dict[str, dict[str, object]]) -> bool:
     """Re-enable physical outputs through KWin with their saved configuration."""
-    if not specs:
+    enabled_specs = {name: spec for name, spec in specs.items() if spec.get("enabled", True)}
+    if not enabled_specs:
         return True
     outputs = _outputs() or []
     args: list[str] = []
-    for spec in specs.values():
+    for spec in enabled_specs.values():
         o = spec["output"]
         args.append(f"output.{o}.enable")
         mode = _resolve_mode(spec, outputs)

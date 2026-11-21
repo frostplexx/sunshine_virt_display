@@ -1,5 +1,6 @@
 """Tests for src/display.py"""
 
+import json
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import MagicMock, call, patch
@@ -419,6 +420,47 @@ class TestConnect:
              patch("src.display.create_edid", return_value=b"\x00" * 256):
             assert connect(2868, 1320, 120) is True
         start_map.assert_called_once_with("DP-1")
+
+    def test_kwin_disabled_connected_output_does_not_abort(self, tmp_path):
+        specs = {
+            "HDMI-A-1": {"output": "HDMI-A-1", "enabled": True},
+            "eDP-1": {"output": "eDP-1", "enabled": False},
+        }
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.monitor_specs", return_value=specs), \
+             patch("src.display.kwin.disable_outputs", return_value=True) as disable, \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=["HDMI-A-1", "eDP-1"]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", return_value=_ok_run()), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "2868x1320")), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            assert connect(2868, 1320, 120) is True
+        disable.assert_called_once_with(["HDMI-A-1"])
+        saved = json.loads((tmp_path / "virt_display.state").read_text().split("\n")[4])
+        assert saved["HDMI-A-1"]["enabled"] is True
+        assert saved["eDP-1"]["enabled"] is False
+
+    def test_kwin_missing_restore_state_clears_edid_override(self, tmp_path):
+        mock_run = MagicMock(return_value=_ok_run())
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.monitor_specs", return_value={}), \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=["HDMI-A-1"]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", mock_run), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            assert connect(854, 480, 60) is False
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert any("/dev/null >" in c and "edid_override" in c for c in cmds)
 
     def test_kwin_connect_restarts_keyboard(self, tmp_path):
         with patch("src.display.SCRIPT_DIR", tmp_path), \
