@@ -428,51 +428,100 @@ class TestTouchMapping:
 
 class TestVirtualKeyboardRestart:
     PROCS = [
-        (1359, "kwin_wayland", 1346),
-        (44326, "maliit-keyboard", 1359),    # started by KWin -> restart
-        (50000, "maliit-keyboard", 2000),    # started by something else -> leave alone
-        (50001, "plasma-keyboard", 1359),    # Plasma's newer keyboard, KWin-managed
-        (50002, "plasmashell", 1),
+        (1359, "kwin_wayland", 1346, 1000),
+        (44326, "maliit-keyboard", 1359, 1000),    # started by KWin -> restart
+        (50000, "maliit-keyboard", 2000, 1000),    # started by something else -> leave alone
+        (50001, "plasma-keyboard", 1359, 1000),    # Plasma's newer keyboard, KWin-managed
+        (50002, "plasmashell", 1, 1000),
+        (7000, "kwin_wayland", 1346, 2000),        # another user's session
+        (7001, "maliit-keyboard", 7000, 2000),
     ]
+
+    @pytest.fixture(autouse=True)
+    def _reset_restart_budget(self):
+        kwin._keyboard_restarts.clear()
 
     def test_only_kwin_managed_keyboards_are_restarted(self):
         with patch("src.drm.de.kwin._processes", return_value=self.PROCS), \
              patch("os.kill") as kill:
-            assert kwin.restart_virtual_keyboard() == [44326, 50001]
+            assert kwin.restart_virtual_keyboard(kwin_pid=1359) == [44326, 50001]
         import signal
         assert sorted(c.args for c in kill.call_args_list) == [(44326, signal.SIGTERM), (50001, signal.SIGTERM)]
 
+    def test_restart_is_scoped_to_the_given_compositor(self):
+        with patch("src.drm.de.kwin._processes", return_value=self.PROCS), \
+             patch("os.kill") as kill:
+            assert kwin.restart_virtual_keyboard(kwin_pid=1359) == [44326, 50001]
+        killed = {c.args[0] for c in kill.call_args_list}
+        assert 7001 not in killed
+
+    def test_restart_without_pid_uses_the_session_user(self):
+        with patch("src.drm.de.kwin._processes", return_value=self.PROCS), \
+             patch("src.drm.de.kwin._session_uid", return_value=1000), \
+             patch("os.kill") as kill:
+            assert kwin.restart_virtual_keyboard() == [44326, 50001]
+        killed = {c.args[0] for c in kill.call_args_list}
+        assert 7001 not in killed
+
     def test_no_kwin_means_nothing_killed(self):
         procs = [p for p in self.PROCS if p[1] != "kwin_wayland"]
-        with patch("src.drm.de.kwin._processes", return_value=procs), patch("os.kill") as kill:
+        with patch("src.drm.de.kwin._processes", return_value=procs), \
+             patch("src.drm.de.kwin._session_uid", return_value=1000), \
+             patch("os.kill") as kill:
             assert kwin.restart_virtual_keyboard() == []
         kill.assert_not_called()
 
     def test_kill_failure_is_non_fatal(self):
         with patch("src.drm.de.kwin._processes", return_value=self.PROCS[:2]), \
              patch("os.kill", side_effect=PermissionError("nope")):
-            assert kwin.restart_virtual_keyboard() == []
+            assert kwin.restart_virtual_keyboard(kwin_pid=1359) == []
+
+    def test_restart_budget_stops_before_kwin_gives_up(self):
+        assert [kwin._reserve_keyboard_restart(now=t) for t in (0, 1, 2, 3)] == [True] * 4
+        assert kwin._reserve_keyboard_restart(now=4) is False
+        assert kwin._reserve_keyboard_restart(now=21) is True
+
+    def test_restart_is_skipped_when_the_budget_is_exhausted(self):
+        with patch("src.drm.de.kwin._processes", return_value=self.PROCS), \
+             patch("src.drm.de.kwin._reserve_keyboard_restart", return_value=False), \
+             patch("os.kill") as kill:
+            assert kwin.restart_virtual_keyboard(kwin_pid=1359) == []
+        kill.assert_not_called()
 
     def test_restart_later_waits_then_restarts(self):
         with patch("src.drm.de.kwin.restart_virtual_keyboard") as restart, \
              patch("src.drm.de.kwin.time.sleep") as sleep:
-            kwin.restart_virtual_keyboard_later(delay=1.5).join(timeout=2)
+            kwin.restart_virtual_keyboard_later(delay=1.5, kwin_pid=1359).join(timeout=2)
         sleep.assert_called_once_with(1.5)
-        restart.assert_called_once()
+        restart.assert_called_once_with(1359)
 
     def test_processes_reads_proc(self):
         procs = kwin._processes()
         me = [p for p in procs if p[0] == os.getpid()]
-        assert me and me[0][2] == os.getppid()
+        assert me and me[0][2] == os.getppid() and me[0][3] == os.getuid()
 
 
 class TestKwinSessionAlive:
+    PROCS = [(10, "bash", 1, 1000), (1359, "kwin_wayland", 1346, 1000), (7000, "kwin_wayland", 1, 2000)]
+
     def test_find_kwin_pid(self):
-        with patch("src.drm.de.kwin._processes", return_value=[(10, "bash", 1), (1359, "kwin_wayland", 1346)]):
+        with patch("src.drm.de.kwin._processes", return_value=self.PROCS):
             assert kwin.find_kwin_pid() == 1359
             assert kwin.session_alive() is True
 
+    def test_session_alive_checks_the_given_pid(self):
+        with patch("src.drm.de.kwin._processes", return_value=self.PROCS):
+            assert kwin.session_alive(1359) is True
+            assert kwin.session_alive(9999) is False
+
     def test_no_kwin_after_logout(self):
-        with patch("src.drm.de.kwin._processes", return_value=[(10, "bash", 1), (11, "sddm", 1)]):
+        with patch("src.drm.de.kwin._processes", return_value=[(10, "bash", 1, 1000), (11, "sddm", 1, 1000)]):
             assert kwin.find_kwin_pid() is None
             assert kwin.session_alive() is False
+
+
+class TestWaylandSocketNumber:
+    def test_sorts_numerically(self):
+        names = [Path("wayland-10"), Path("wayland-2"), Path("wayland-1")]
+        assert sorted(names, key=kwin._wayland_socket_number) == [
+            Path("wayland-1"), Path("wayland-2"), Path("wayland-10")]

@@ -97,6 +97,14 @@ def _read_environ(proc: Path) -> dict[str, str]:
     return env
 
 
+def _wayland_socket_number(path: Path) -> int:
+    """Numeric suffix of a wayland-N socket, for a stable sort order."""
+    try:
+        return int(path.name.partition("-")[2])
+    except ValueError:
+        return -1
+
+
 def _find_wayland_display(uid: int, runtime_dir: str, kwin_env: dict[str, str]) -> str | None:
     """
     kwin_wayland is handed its listening socket by kwin_wayland_wrapper, so its
@@ -122,7 +130,7 @@ def _find_wayland_display(uid: int, runtime_dir: str, kwin_env: dict[str, str]) 
             return display
 
     try:
-        candidates = sorted(Path(runtime_dir).glob("wayland-[0-9]*"))
+        candidates = sorted(Path(runtime_dir).glob("wayland-[0-9]*"), key=_wayland_socket_number)
     except OSError:
         candidates = []
     for cand in candidates:
@@ -194,15 +202,22 @@ def _run_in_session(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
 
 def find_kwin_pid() -> int | None:
     """PID of the running kwin_wayland, or None when no KWin session exists."""
-    for pid, comm, _ in _processes():
+    for pid, comm, _, _ in _processes():
         if comm == "kwin_wayland":
             return pid
     return None
 
 
-def session_alive() -> bool:
-    """False once KWin has exited, e.g. after the user logged out."""
-    return find_kwin_pid() is not None
+def session_alive(kwin_pid: int | None = None) -> bool:
+    """False once KWin has exited, e.g. after the user logged out.
+
+    With *kwin_pid* only that compositor counts, so another user's session
+    cannot keep the check alive after a logout.
+    """
+    if kwin_pid is None:
+        return find_kwin_pid() is not None
+    return any(pid == kwin_pid and comm == "kwin_wayland"
+               for pid, comm, _, _ in _processes())
 
 
 def kscreen_doctor(args: list[str]) -> subprocess.CompletedProcess[str] | None:
@@ -485,14 +500,46 @@ def stop_input_mapping() -> None:
 
 _KEYBOARD_NAMES = ("maliit-keyboard", "plasma-keyboard")
 
+# KWin restarts the input method only on CrashExit and gives up after the
+# fifth crash within 20 s (src/inputmethod.cpp).  Keep one restart in reserve.
+_KEYBOARD_RESTART_WINDOW = 20.0
+_KEYBOARD_RESTART_BUDGET = 4
+_keyboard_restarts: list[float] = []
+_keyboard_restart_lock = threading.Lock()
 
-def _processes() -> list[tuple[int, str, int]]:
-    """Return (pid, comm, ppid) for every process."""
-    procs: list[tuple[int, str, int]] = []
+
+def _reserve_keyboard_restart(now: float | None = None) -> bool:
+    """Take one slot from the restart budget KWin tolerates."""
+    timestamp = time.monotonic() if now is None else now
+    with _keyboard_restart_lock:
+        cutoff = timestamp - _KEYBOARD_RESTART_WINDOW
+        while _keyboard_restarts and _keyboard_restarts[0] <= cutoff:
+            _keyboard_restarts.pop(0)
+        if len(_keyboard_restarts) >= _KEYBOARD_RESTART_BUDGET:
+            return False
+        _keyboard_restarts.append(timestamp)
+        return True
+
+
+def _session_uid() -> int | None:
+    """UID of the user that owns the KWin session, when one is reachable."""
+    session = find_session()
+    if not session:
+        return None
+    try:
+        return pwd.getpwnam(session["user"]).pw_uid
+    except KeyError:
+        return None
+
+
+def _processes() -> list[tuple[int, str, int, int]]:
+    """Return (pid, comm, ppid, uid) for every process."""
+    procs: list[tuple[int, str, int, int]] = []
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit():
             continue
         try:
+            uid = proc.stat().st_uid
             comm = (proc / "comm").read_text().strip()
             ppid = 0
             for line in (proc / "status").read_text().splitlines():
@@ -501,35 +548,53 @@ def _processes() -> list[tuple[int, str, int]]:
                     break
         except (OSError, ValueError):
             continue
-        procs.append((int(proc.name), comm, ppid))
+        procs.append((int(proc.name), comm, ppid, uid))
     return procs
 
 
-def restart_virtual_keyboard() -> list[int]:
+def restart_virtual_keyboard(kwin_pid: int | None = None) -> list[int]:
     """
     Terminate KWin-managed on-screen keyboards so KWin restarts them at the
     current output size.  Keyboards not started by KWin are left alone, since
     nothing would bring them back.  Returns the PIDs that were signalled.
+
+    Only keyboards of *kwin_pid* are touched.  Without a PID (old state files)
+    only keyboards of the session user are touched, so a global hotplug does
+    not kill another user's keyboard.
     """
     procs = _processes()
-    kwin_pids = {pid for pid, comm, _ in procs if comm == "kwin_wayland"}
+    if kwin_pid is not None:
+        kwin_pids = {kwin_pid}
+    else:
+        uid = _session_uid()
+        if uid is None:
+            return []
+        kwin_pids = {pid for pid, comm, _, puid in procs
+                     if comm == "kwin_wayland" and puid == uid}
+    targets = [(pid, comm) for pid, comm, ppid, _ in procs
+               if comm in _KEYBOARD_NAMES and ppid in kwin_pids]
+    if not targets:
+        return []
+    if not _reserve_keyboard_restart():
+        print("  ⚠ Skipped on-screen keyboard restart: KWin's restart budget is exhausted")
+        return []
     restarted: list[int] = []
-    for pid, comm, ppid in procs:
-        if comm in _KEYBOARD_NAMES and ppid in kwin_pids:
-            try:
-                os.kill(pid, signal.SIGTERM)
-                restarted.append(pid)
-                print(f"  ✓ Restarted {comm} (pid {pid}) so it resizes to the new layout")
-            except OSError as e:
-                print(f"  Warning: could not restart {comm} (pid {pid}): {e}")
+    for pid, comm in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            restarted.append(pid)
+            print(f"  ✓ Restarted {comm} (pid {pid}) so it resizes to the new layout")
+        except OSError as e:
+            print(f"  Warning: could not restart {comm} (pid {pid}): {e}")
     return restarted
 
 
-def restart_virtual_keyboard_later(delay: float = 1.0) -> threading.Thread:
+def restart_virtual_keyboard_later(delay: float = 1.0,
+                                   kwin_pid: int | None = None) -> threading.Thread:
     """Restart the on-screen keyboard after *delay* seconds, in the background."""
     def run() -> None:
         time.sleep(delay)
-        _ = restart_virtual_keyboard()
+        _ = restart_virtual_keyboard(kwin_pid)
 
     thread = threading.Thread(target=run, daemon=True, name="kwin-keyboard-restart")
     thread.start()
