@@ -170,16 +170,6 @@ def _get_sunshine_pid() -> int | None:
     return None
 
 
-def _watch_sunshine_pid(pid: int) -> None:
-    """Block on a pidfd until Sunshine exits, then disconnect."""
-    _watch_pid(pid, "Sunshine")
-
-
-def _watch_kwin_pid(pid: int) -> None:
-    """Block until KWin exits (the user logged out), then disconnect."""
-    _watch_pid(pid, "KWin")
-
-
 def _watch_pid(pid: int, label: str) -> None:
     """Block on a pidfd until *pid* exits, then disconnect if still connected."""
     try:
@@ -390,13 +380,11 @@ def _hotplug_listener() -> None:
             # whether it owned the event.
             owned = _op_active.is_set()
             time.sleep(1.0)
-            sock.setblocking(False)
-            try:
-                while True:
-                    sock.recv(65536)
-            except (BlockingIOError, OSError):
-                pass
-            sock.setblocking(True)
+            while True:
+                try:
+                    _ = sock.recv(65536, socket.MSG_DONTWAIT)
+                except OSError:
+                    break
 
             now = display.physical_connectors()
             if owned or _op_active.is_set():
@@ -446,8 +434,8 @@ def _handle_command(args: list[str]) -> None:
             pid = _get_sunshine_pid()
             if pid:
                 threading.Thread(
-                    target=_watch_sunshine_pid,
-                    args=(pid,),
+                    target=_watch_pid,
+                    args=(pid, "Sunshine"),
                     daemon=True,
                     name="sunshine-pid-watch",
                 ).start()
@@ -457,8 +445,8 @@ def _handle_command(args: list[str]) -> None:
                 kwin_pid = display.kwin_session_pid() or kwin.find_kwin_pid()
                 if kwin_pid:
                     threading.Thread(
-                        target=_watch_kwin_pid,
-                        args=(kwin_pid,),
+                        target=_watch_pid,
+                        args=(kwin_pid, "KWin"),
                         daemon=True,
                         name="kwin-pid-watch",
                     ).start()
