@@ -386,6 +386,9 @@ def _hotplug_listener() -> None:
             if not _is_drm_hotplug(sock.recv(65536)):
                 continue
             # Let the kernel/compositor settle, then drain the burst of events.
+            # An ongoing operation can finish during the sleep, so remember
+            # whether it owned the event.
+            owned = _op_active.is_set()
             time.sleep(1.0)
             sock.setblocking(False)
             try:
@@ -396,7 +399,7 @@ def _hotplug_listener() -> None:
             sock.setblocking(True)
 
             now = display.physical_connectors()
-            if _op_active.is_set():
+            if owned or _op_active.is_set():
                 last = now
                 continue
             if now != last:
