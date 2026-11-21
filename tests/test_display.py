@@ -26,7 +26,9 @@ def _default_to_legacy_drm_path():
          patch("src.display._use_kwin_safe_path", return_value=False), \
          patch("src.display.notify_hotplug", return_value=True), \
          patch("src.display.kwin.start_input_mapping"), \
-         patch("src.display.kwin.stop_input_mapping"):
+         patch("src.display.kwin.stop_input_mapping"), \
+         patch("src.display.kwin.restart_virtual_keyboard_later"), \
+         patch("src.display._output_connected", return_value=True):
         yield
 
 
@@ -418,6 +420,39 @@ class TestConnect:
             assert connect(2868, 1320, 120) is True
         start_map.assert_called_once_with("DP-1")
 
+    def test_kwin_connect_restarts_keyboard(self, tmp_path):
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.monitor_specs", return_value={"HDMI-A-1": {"output": "HDMI-A-1"}}), \
+             patch("src.display.kwin.disable_outputs", return_value=True), \
+             patch("src.display.kwin.restart_virtual_keyboard_later") as restart_kb, \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=["HDMI-A-1"]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", return_value=_ok_run()), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "2868x1320")), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            assert connect(2868, 1320, 120) is True
+        restart_kb.assert_called_once()
+
+    def test_legacy_connect_does_not_restart_keyboard(self, tmp_path):
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.restart_virtual_keyboard_later") as restart_kb, \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=[]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", return_value=_ok_run()), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "1920x1080")), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            assert connect(1920, 1080, 60) is True
+        restart_kb.assert_not_called()
+
     def test_hotplug_sent_after_enabling_virtual_output(self, tmp_path):
         # Regression: sysfs status writes emit no uevent, so KWin never saw the
         # virtual output and Step 7 timed out.
@@ -594,9 +629,11 @@ class TestDisconnect:
         with patch("src.display.SCRIPT_DIR", tmp_path), \
              patch("src.display.kwin.restore_outputs", return_value=True), \
              patch("src.display.kwin.stop_input_mapping") as stop_map, \
+             patch("src.display.kwin.restart_virtual_keyboard_later") as restart_kb, \
              patch("src.display.run_command", return_value=_ok_run()):
             assert disconnect() is True
         stop_map.assert_called_once()
+        restart_kb.assert_called_once()
 
     def test_hotplug_sent_after_virtual_output_removed(self, tmp_path):
         # Regression: without a uevent KWin kept the disconnected virtual
@@ -621,6 +658,80 @@ class TestDisconnect:
         state.write_text('card1\nDP-1\nHDMI-A-2\n\n{"HDMI-A-2":{"output":"HDMI-A-2","mode":"3","position":"0,0","scale":1}}\nkwin')
         with patch("src.display.SCRIPT_DIR", tmp_path), \
              patch("src.display.kwin.restore_outputs", return_value=False), \
+             patch("src.display.kwin.session_alive", return_value=True), \
              patch("src.display.run_command", return_value=_ok_run()):
             assert disconnect() is False
         assert state.exists()
+
+    def test_kwin_logout_still_removes_virtual_display(self, tmp_path):
+        # Logged out: KWin is gone, so the restore can't succeed. The virtual
+        # output must still be switched off, or the next login comes up on the
+        # phone-sized phantom display with the monitor disabled.
+        state = tmp_path / "virt_display.state"
+        state.write_text('card1\nDP-1\nHDMI-A-1\n/x/edid_override\n{"HDMI-A-1":{"output":"HDMI-A-1","width":3440,"height":1440,"refresh":100,"position":"0,0","scale":2}}\nkwin')
+        mock_run = MagicMock(return_value=_ok_run())
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.restore_outputs", return_value=False), \
+             patch("src.display.kwin.session_alive", return_value=False), \
+             patch("src.display.run_command", mock_run):
+            assert disconnect() is True
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert any("echo off > /sys/class/drm/card1-DP-1/status" in c for c in cmds)
+        assert any("/dev/null > /x/edid_override" in c for c in cmds)
+        assert not state.exists()
+
+    def test_unplugged_monitor_is_skipped_on_restore(self, tmp_path):
+        state = tmp_path / "virt_display.state"
+        specs = '{"HDMI-A-1":{"output":"HDMI-A-1"},"DP-2":{"output":"DP-2"}}'
+        state.write_text(f"card1\nDP-1\nHDMI-A-1,DP-2\n\n{specs}\nkwin")
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._output_connected", side_effect=lambda c, o: o == "HDMI-A-1"), \
+             patch("src.display.kwin.restore_outputs", return_value=True) as restore, \
+             patch("src.display.run_command", return_value=_ok_run()):
+            assert disconnect() is True
+        assert list(restore.call_args[0][0]) == ["HDMI-A-1"]
+
+    def test_all_monitors_unplugged_still_removes_virtual_display(self, tmp_path):
+        # Monitor unplugged mid-stream: restoring it would fail and leave the
+        # virtual display stuck on, like after a logout.
+        state = tmp_path / "virt_display.state"
+        state.write_text('card1\nDP-1\nHDMI-A-1\n/x/edid_override\n{"HDMI-A-1":{"output":"HDMI-A-1"}}\nkwin')
+        mock_run = MagicMock(return_value=_ok_run())
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._output_connected", return_value=False), \
+             patch("src.display.kwin.restore_outputs") as restore, \
+             patch("src.display.run_command", mock_run):
+            assert disconnect() is True
+        restore.assert_not_called()
+        assert any("echo off > /sys/class/drm/card1-DP-1/status" in c[0][0] for c in mock_run.call_args_list)
+        assert not state.exists()
+
+    def test_physical_connectors_excludes_virtual_and_writeback(self, tmp_path):
+        from src.display import physical_connectors
+        sysfs = tmp_path / "drm"
+        for name, status in [("card1-HDMI-A-1", "connected"), ("card1-DP-1", "connected"),
+                             ("card1-DP-2", "disconnected"), ("card1-Writeback-1", "connected")]:
+            (sysfs / name).mkdir(parents=True)
+            (sysfs / name / "status").write_text(status + "\n")
+        (tmp_path / "virt_display.state").write_text("card1\nDP-1\nHDMI-A-1\n\n{}\nkwin")
+        with patch("src.display.DRM_SYSFS", sysfs), patch("src.display.SCRIPT_DIR", tmp_path):
+            assert physical_connectors() == {"card1-HDMI-A-1"}
+        (tmp_path / "virt_display.state").unlink()
+        with patch("src.display.DRM_SYSFS", sysfs), patch("src.display.SCRIPT_DIR", tmp_path):
+            assert physical_connectors() == {"card1-HDMI-A-1", "card1-DP-1"}
+
+    @pytest.mark.parametrize("content,expected", [
+        ('card1\nDP-1\nHDMI-A-1\n/x\n{"HDMI-A-1":{}}\nkwin', "kwin"),
+        ('card1\nDP-1\nHDMI-A-1\n/x\n{"HDMI-A-1":{}}', "hyprland"),
+        ("card1\nDP-1\nHDMI-A-1\n/x\n{}\n", None),
+    ])
+    def test_active_backend(self, tmp_path, content, expected):
+        from src.display import active_backend
+        (tmp_path / "virt_display.state").write_text(content)
+        with patch("src.display.SCRIPT_DIR", tmp_path):
+            assert active_backend() == expected
+
+    def test_active_backend_without_session(self, tmp_path):
+        from src.display import active_backend
+        with patch("src.display.SCRIPT_DIR", tmp_path):
+            assert active_backend() is None
