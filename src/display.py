@@ -205,6 +205,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
     backend = _SAFE_BACKENDS[backend_name] if backend_name else None
     safe_path = backend is not None
     restore_specs: dict[str, dict[str, object]] = {}
+    hide_outputs: list[str] = []
 
     if backend is not None:
         print(f"\nStep 5: {backend_name} detected — using compositor-safe monitor toggles")
@@ -213,7 +214,11 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
         if missing_specs:
             print(f"  Error: Could not capture {backend_name} restore state for: {', '.join(missing_specs)}")
             print("  Refusing to hide physical outputs without a known-good restore plan")
+            _ = run_command(f"sh -c 'cat /dev/null > {edid_override_path}'")
             return False
+        # Outputs that are connected but disabled in the compositor stay
+        # disabled: the user turned them off on purpose.
+        hide_outputs = [o for o, spec in restore_specs.items() if spec.get("enabled", True)]
         print(f"  Physical outputs will be hidden via {backend_name}, not by stealing DRM CRTCs")
     else:
         # Turn off all connected displays and explicitly release their CRTCs.
@@ -271,10 +276,10 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
         else:
             print(f"  ⚠ Timed out waiting for output, proceeding anyway")
 
-    if backend is not None and connected_displays:
+    if backend is not None and hide_outputs:
         print(f"\nStep 8: Hiding physical outputs via {backend_name}...")
-        if backend.disable_outputs(connected_displays):
-            print(f"  ✓ Hidden: {', '.join(connected_displays)}")
+        if backend.disable_outputs(hide_outputs):
+            print(f"  ✓ Hidden: {', '.join(hide_outputs)}")
         else:
             print("  ✗ Could not hide one or more physical outputs — cleaning up virtual display")
             _ = run_command(f"sh -c 'echo off > /sys/class/drm/{card_name}-{empty_port}/status'")
