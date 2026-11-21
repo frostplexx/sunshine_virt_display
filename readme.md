@@ -110,7 +110,7 @@ Outputs that you disabled in KDE stay disabled. For example, with the internal p
 While a stream is active, the daemon also:
 
 - Restarts `maliit-keyboard` / `plasma-keyboard` after connect, after disconnect and after a real monitor hotplug. Those keyboards size themselves to the output they start on, so a restart makes them fit the new layout. Remove any `killall maliit-keyboard` Do/Undo command from Sunshine: the daemon does this itself now, and `killall` fails when the keyboard is not running.
-- Disconnects the virtual display when KWin exits, for example on logout. The next login then starts on the physical monitor instead of a phone-sized phantom output.
+- Disconnects the virtual display when KWin exits, for example on logout. The next login then starts on the physical monitor instead a phantom output.
 - Skips a monitor that was unplugged during the stream, instead of failing the disconnect and leaving the virtual display switched on.
 
 The daemon only restarts a keyboard that KWin itself started, and it limits restarts so KWin does not stop restarting the keyboard.
