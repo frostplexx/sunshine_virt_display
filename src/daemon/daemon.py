@@ -412,6 +412,12 @@ def _shutdown(signum, frame) -> None:
 def main() -> None:
     global _server
 
+    # display.py and the drm modules report progress via print(). Under systemd
+    # stdout is a pipe and therefore block-buffered, so those diagnostics would
+    # never reach the journal before a failure/kill (issue #25).
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
@@ -458,7 +464,7 @@ def main() -> None:
                 log.info("Received command: %s", args)
                 _handle_command(args)
         except Exception as exc:
-            log.error("Error handling connection: %s", exc)
+            log.error("Error handling connection: %s", exc, exc_info=True)
         finally:
             conn.close()
 

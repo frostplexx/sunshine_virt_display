@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from src.display import connect, disconnect
+from src.display import _use_hyprland_safe_path as _real_use_hyprland_safe_path
+from src.display import _use_kwin_safe_path as _real_use_kwin_safe_path
 
 
 def _ok_run(cmd: str = "") -> CompletedProcess:
@@ -19,9 +21,37 @@ def _fail_run(cmd: str = "") -> CompletedProcess:
 
 @pytest.fixture(autouse=True)
 def _default_to_legacy_drm_path():
-    """Keep existing tests deterministic on NVIDIA/Hyprland dev machines."""
-    with patch("src.display._use_hyprland_safe_path", return_value=False):
+    """Keep existing tests deterministic on Hyprland dev machines."""
+    with patch("src.display._use_hyprland_safe_path", return_value=False), \
+         patch("src.display._use_kwin_safe_path", return_value=False), \
+         patch("src.display.notify_hotplug", return_value=True), \
+         patch("src.display.kwin.start_input_mapping"), \
+         patch("src.display.kwin.stop_input_mapping"):
         yield
+
+
+class TestHyprlandSafePathGate:
+    """Regression for issue #31: AMD + Hyprland must not use direct DRM CRTC stealing."""
+
+    def test_hyprland_on_amdgpu_uses_safe_path(self):
+        with patch("src.display.hyprland.available", return_value=True), \
+             patch("pathlib.Path.resolve", return_value=Path("/sys/bus/pci/drivers/amdgpu")):
+            assert _real_use_hyprland_safe_path("card1") is True
+
+    def test_hyprland_on_nvidia_uses_safe_path(self):
+        with patch("src.display.hyprland.available", return_value=True), \
+             patch("pathlib.Path.resolve", return_value=Path("/sys/bus/pci/drivers/nvidia")):
+            assert _real_use_hyprland_safe_path("card1") is True
+
+    def test_non_hyprland_uses_legacy_drm_path(self):
+        with patch("src.display.hyprland.available", return_value=False):
+            assert _real_use_hyprland_safe_path("card1") is False
+
+    def test_kwin_gate_follows_kwin_availability(self):
+        with patch("src.display.kwin.available", return_value=True):
+            assert _real_use_kwin_safe_path("card1") is True
+        with patch("src.display.kwin.available", return_value=False):
+            assert _real_use_kwin_safe_path("card1") is False
 
 
 class TestConnect:
@@ -338,6 +368,82 @@ class TestConnect:
         assert not any("echo off > /sys/class/drm/card1-DP-1/status" in c for c in cmds)
 
 
+    def test_kwin_safe_path_hides_outputs_without_drm_stealing(self, tmp_path):
+        restore_specs = {"HDMI-A-2": {"output": "HDMI-A-2", "mode": "3", "position": "0,0", "scale": 1}}
+        mock_release = MagicMock(return_value=True)
+        mock_force = MagicMock(return_value=True)
+        mock_run = MagicMock(return_value=_ok_run())
+
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.monitor_specs", return_value=restore_specs), \
+             patch("src.display.kwin.disable_outputs", return_value=True) as mock_disable, \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:01:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=["HDMI-A-2"]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", mock_run), \
+             patch("src.display.release_crtc", mock_release), \
+             patch("src.display.force_crtc_assignment", mock_force), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "854x480")), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            result = connect(854, 480, 60)
+
+        assert result is True
+        mock_release.assert_not_called()
+        mock_force.assert_not_called()
+        mock_disable.assert_called_once_with(["HDMI-A-2"])
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert not any("card1-HDMI-A-2/status" in c for c in cmds)
+        lines = (tmp_path / "virt_display.state").read_text().split("\n")
+        assert lines[5] == "kwin"
+
+    def test_kwin_connect_maps_touch_to_virtual_output(self, tmp_path):
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._use_kwin_safe_path", return_value=True), \
+             patch("src.display.kwin.monitor_specs", return_value={"HDMI-A-1": {"output": "HDMI-A-1"}}), \
+             patch("src.display.kwin.disable_outputs", return_value=True), \
+             patch("src.display.kwin.start_input_mapping") as start_map, \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=["HDMI-A-1"]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", return_value=_ok_run()), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "2868x1320")), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            assert connect(2868, 1320, 120) is True
+        start_map.assert_called_once_with("DP-1")
+
+    def test_hotplug_sent_after_enabling_virtual_output(self, tmp_path):
+        # Regression: sysfs status writes emit no uevent, so KWin never saw the
+        # virtual output and Step 7 timed out.
+        order: list[str] = []
+        def run(cmd):
+            if "echo on" in cmd:
+                order.append("on")
+            return _ok_run()
+        def ready(*a, **k):
+            order.append("wait")
+            return (True, "1920x1080")
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.notify_hotplug", side_effect=lambda c: order.append(f"hotplug:{c}")), \
+             patch("src.display.get_pixel_clock_info", return_value=(100.0, 655.35, False)), \
+             patch("src.display.get_drm_devices", return_value=[Path("/sys/kernel/debug/dri/0000:03:00.0")]), \
+             patch("src.display.get_card_name_from_device", return_value="card1"), \
+             patch("src.display.get_connected_displays", return_value=[]), \
+             patch("src.display.find_empty_slot", return_value=("DP-1", tmp_path)), \
+             patch("src.display.run_command", side_effect=run), \
+             patch("src.display.wait_for_output_ready", side_effect=ready), \
+             patch("src.display.clear_kwin_output_config"), \
+             patch("src.display.create_edid", return_value=b"\x00" * 256):
+            assert connect(1920, 1080, 60) is True
+        assert order.index("on") < order.index("hotplug:card1") < order.index("wait")
+
+
 class TestDisconnect:
     def _write_state(self, path: Path, card: str, port: str, displays: list[str]) -> None:
         (path / "virt_display.state").write_text(
@@ -459,3 +565,62 @@ class TestDisconnect:
         assert result is True
         mock_restore.assert_called_once()
         mock_force.assert_not_called()
+
+    def test_kwin_restore_path_skips_crtc_forcing(self, tmp_path):
+        restore_json = '{"HDMI-A-2":{"output":"HDMI-A-2","mode":"3","position":"0,0","scale":1}}'
+        (tmp_path / "virt_display.state").write_text(
+            f"card1\nDP-1\nHDMI-A-2\n{tmp_path / 'DP-1' / 'edid_override'}\n{restore_json}\nkwin"
+        )
+        mock_kwin = MagicMock(return_value=True)
+        mock_hypr = MagicMock(return_value=True)
+        mock_force = MagicMock(return_value=True)
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.restore_outputs", mock_kwin), \
+             patch("src.display.hyprland.restore_outputs", mock_hypr), \
+             patch("src.display.run_command", return_value=_ok_run()), \
+             patch("src.display.force_crtc_assignment", mock_force), \
+             patch("src.display.release_crtc", return_value=True):
+            result = disconnect()
+
+        assert result is True
+        mock_kwin.assert_called_once()
+        mock_hypr.assert_not_called()
+        mock_force.assert_not_called()
+
+    def test_kwin_disconnect_stops_touch_mapping(self, tmp_path):
+        (tmp_path / "virt_display.state").write_text(
+            'card1\nDP-1\nHDMI-A-1\n\n{"HDMI-A-1":{"output":"HDMI-A-1","width":3440,"height":1440,"refresh":100,"position":"0,0","scale":2}}\nkwin'
+        )
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.restore_outputs", return_value=True), \
+             patch("src.display.kwin.stop_input_mapping") as stop_map, \
+             patch("src.display.run_command", return_value=_ok_run()):
+            assert disconnect() is True
+        stop_map.assert_called_once()
+
+    def test_hotplug_sent_after_virtual_output_removed(self, tmp_path):
+        # Regression: without a uevent KWin kept the disconnected virtual
+        # output as an invisible extra screen.
+        (tmp_path / "virt_display.state").write_text(
+            'card1\nDP-1\nHDMI-A-1\n/x/edid_override\n{"HDMI-A-1":{"output":"HDMI-A-1","width":3440,"height":1440,"refresh":100,"position":"0,0","scale":2}}\nkwin'
+        )
+        order: list[str] = []
+        def run(cmd):
+            order.append("edid-clear" if "/dev/null" in cmd else "off" if "echo off" in cmd else cmd)
+            return _ok_run()
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.restore_outputs", return_value=True), \
+             patch("src.display.notify_hotplug", side_effect=lambda c: order.append(f"hotplug:{c}")), \
+             patch("src.display.run_command", side_effect=run):
+            assert disconnect() is True
+        assert order[-1] == "hotplug:card1"
+        assert order.index("off") < order.index("edid-clear") < order.index("hotplug:card1")
+
+    def test_kwin_restore_failure_preserves_state(self, tmp_path):
+        state = tmp_path / "virt_display.state"
+        state.write_text('card1\nDP-1\nHDMI-A-2\n\n{"HDMI-A-2":{"output":"HDMI-A-2","mode":"3","position":"0,0","scale":1}}\nkwin')
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.restore_outputs", return_value=False), \
+             patch("src.display.run_command", return_value=_ok_run()):
+            assert disconnect() is False
+        assert state.exists()

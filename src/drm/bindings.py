@@ -38,10 +38,32 @@ _CONNECTOR_TYPE_NAMES: dict[int, str] = {
     18: "WRITEBACK", 19: "SPI", 20: "USB",
 }
 
+# Sysfs connector names come from the kernel's drm_connector_enum_list
+# (e.g. card1-eDP-1, card0-DVI-D-1). Every connector type must be mapped,
+# otherwise physical displays on that connector can't be restored (issue #25).
 _SYSFS_TO_DRM_TYPE: dict[str, str] = {
+    "Unknown": "Unknown",
+    "VGA": "VGA",
+    "DVI-I": "DVII",
+    "DVI-D": "DVID",
+    "DVI-A": "DVIA",
+    "Composite": "Composite",
+    "SVIDEO": "SVIDEO",
+    "LVDS": "LVDS",
+    "Component": "Component",
+    "DIN": "9PinDIN",
     "DP": "DisplayPort",
     "HDMI-A": "HDMIA",
+    "HDMI-B": "HDMIB",
     "HDMI": "HDMIA",
+    "TV": "TV",
+    "eDP": "eDP",
+    "Virtual": "VIRTUAL",
+    "DSI": "DSI",
+    "DPI": "DPI",
+    "Writeback": "WRITEBACK",
+    "SPI": "SPI",
+    "USB": "USB",
 }
 
 # ---------------------------------------------------------------------------

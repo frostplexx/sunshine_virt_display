@@ -7,6 +7,7 @@ Requires=dbus.service
 Type=simple
 User=root
 Group=root
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /opt/sunshine-vd/src/daemon/daemon.py
 Restart=always
 RestartSec=3

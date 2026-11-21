@@ -9,6 +9,7 @@ from src.drm.sysfs import (
     get_connected_displays,
     get_display_ports,
     get_drm_devices,
+    notify_hotplug,
     run_command,
 )
 
@@ -19,6 +20,7 @@ __all__ = [
     "get_connected_displays",
     "get_display_ports",
     "get_drm_devices",
+    "notify_hotplug",
     "release_crtc",
     "run_command",
     "wait_for_output_ready",
