@@ -28,7 +28,7 @@ SCRIPT_DIR = Path(__file__).parent.parent.absolute()
 DRM_SYSFS = Path("/sys/class/drm")
 
 
-def _use_hyprland_safe_path(card_name: str) -> bool:
+def _use_hyprland_safe_path() -> bool:
     """
     On Hyprland, direct DRM CRTC stealing/reassignment bypasses the
     compositor's own atomic modeset state: Hyprland never picks up a CRTC we
@@ -40,7 +40,7 @@ def _use_hyprland_safe_path(card_name: str) -> bool:
     return hyprland.available()
 
 
-def _use_kwin_safe_path(card_name: str) -> bool:
+def _use_kwin_safe_path() -> bool:
     """
     KWin has the same problem as Hyprland: it never adopts a CRTC forced
     behind its back, so physical outputs stay dark after disconnect
@@ -55,10 +55,10 @@ def _use_kwin_safe_path(card_name: str) -> bool:
 _SAFE_BACKENDS = {"hyprland": hyprland, "kwin": kwin}
 
 
-def _select_safe_backend(card_name: str) -> str | None:
-    if _use_hyprland_safe_path(card_name):
+def _select_safe_backend() -> str | None:
+    if _use_hyprland_safe_path():
         return "hyprland"
-    if _use_kwin_safe_path(card_name):
+    if _use_kwin_safe_path():
         return "kwin"
     return None
 
@@ -201,7 +201,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
 
     print(f"  ✓ EDID override applied")
 
-    backend_name = _select_safe_backend(card_name)
+    backend_name = _select_safe_backend()
     backend = _SAFE_BACKENDS[backend_name] if backend_name else None
     safe_path = backend is not None
     restore_specs: dict[str, dict[str, object]] = {}
@@ -381,15 +381,16 @@ def disconnect() -> bool:
         restore_specs = json.loads(state_data[4]) if len(state_data) > 4 and state_data[4] else {}
     except json.JSONDecodeError:
         restore_specs = {}
-    # State files written before the KWin backend existed have no line 6;
-    # restore specs there always came from Hyprland.
-    backend_name = (state_data[5] if len(state_data) > 5 and state_data[5] else "hyprland")
-    backend = _SAFE_BACKENDS.get(backend_name) if restore_specs else None
+    # Resolve the backend from the state file, not from the restore specs: a
+    # session with no physical outputs still has a compositor backend that we
+    # must use for touch mapping and the keyboard restart.
+    backend_name = active_backend()
+    backend = _SAFE_BACKENDS.get(backend_name) if backend_name else None
 
     print(f"  Virtual display: {card_name}-{virtual_port}")
     print(f"  Previous displays: {previous_displays if previous_displays else 'None'}")
 
-    if backend_name == "kwin" and backend is not None:
+    if backend_name == "kwin":
         kwin.stop_input_mapping()
 
     if backend is not None:
@@ -487,7 +488,7 @@ def disconnect() -> bool:
     # virtual output around as an invisible extra screen.
     _ = notify_hotplug(card_name)
 
-    if backend_name == "kwin" and backend is not None:
+    if backend_name == "kwin":
         # ...and maliit keeps the phone's size until it is restarted.
         _ = kwin.restart_virtual_keyboard_later()
 

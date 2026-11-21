@@ -37,24 +37,22 @@ class TestHyprlandSafePathGate:
     """Regression for issue #31: AMD + Hyprland must not use direct DRM CRTC stealing."""
 
     def test_hyprland_on_amdgpu_uses_safe_path(self):
-        with patch("src.display.hyprland.available", return_value=True), \
-             patch("pathlib.Path.resolve", return_value=Path("/sys/bus/pci/drivers/amdgpu")):
-            assert _real_use_hyprland_safe_path("card1") is True
+        with patch("src.display.hyprland.available", return_value=True):
+            assert _real_use_hyprland_safe_path() is True
 
     def test_hyprland_on_nvidia_uses_safe_path(self):
-        with patch("src.display.hyprland.available", return_value=True), \
-             patch("pathlib.Path.resolve", return_value=Path("/sys/bus/pci/drivers/nvidia")):
-            assert _real_use_hyprland_safe_path("card1") is True
+        with patch("src.display.hyprland.available", return_value=True):
+            assert _real_use_hyprland_safe_path() is True
 
     def test_non_hyprland_uses_legacy_drm_path(self):
         with patch("src.display.hyprland.available", return_value=False):
-            assert _real_use_hyprland_safe_path("card1") is False
+            assert _real_use_hyprland_safe_path() is False
 
     def test_kwin_gate_follows_kwin_availability(self):
         with patch("src.display.kwin.available", return_value=True):
-            assert _real_use_kwin_safe_path("card1") is True
+            assert _real_use_kwin_safe_path() is True
         with patch("src.display.kwin.available", return_value=False):
-            assert _real_use_kwin_safe_path("card1") is False
+            assert _real_use_kwin_safe_path() is False
 
 
 class TestConnect:
@@ -663,6 +661,21 @@ class TestDisconnect:
         mock_kwin.assert_called_once()
         mock_hypr.assert_not_called()
         mock_force.assert_not_called()
+
+    def test_kwin_disconnect_without_restore_specs_uses_safe_path(self, tmp_path):
+        state = tmp_path / "virt_display.state"
+        state.write_text("card1\nDP-1\n\n\n{}\nkwin")
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display.kwin.stop_input_mapping") as stop_map, \
+             patch("src.display.kwin.restart_virtual_keyboard_later") as restart_kb, \
+             patch("src.display.release_crtc") as release, \
+             patch("src.display.force_crtc_assignment") as force, \
+             patch("src.display.run_command", return_value=_ok_run()):
+            assert disconnect() is True
+        stop_map.assert_called_once()
+        restart_kb.assert_called_once()
+        release.assert_not_called()
+        force.assert_not_called()
 
     def test_kwin_disconnect_stops_touch_mapping(self, tmp_path):
         (tmp_path / "virt_display.state").write_text(
