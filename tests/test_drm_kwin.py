@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -304,13 +305,26 @@ class TestTouchMapping:
         {"sysname": "event15", "name": "Touch passthrough", "touch": True, "tablet": False, "output": ""},
     ]
 
+    @pytest.fixture(autouse=True)
+    def _reset_stop_event(self):
+        kwin._mapping_stop.clear()
+
+    @staticmethod
+    def _patch_devices(devices):
+        by_name = {d["sysname"]: d for d in devices}
+        return (
+            patch("src.drm.de.kwin.input_device_sysnames", return_value=list(by_name)),
+            patch("src.drm.de.kwin.input_device", side_effect=lambda s: by_name[s]),
+        )
+
     def test_only_sunshine_touch_and_pen_match(self):
         matched = [d["sysname"] for d in self.DEVICES if kwin._is_sunshine_pointer_device(d)]
         # a real built-in touchscreen (ELAN) and keyboards/mice are left alone
         assert matched == ["event12", "event13", "event15"]
 
     def test_map_virtual_input_maps_each_device_once(self):
-        with patch("src.drm.de.kwin.input_devices", return_value=self.DEVICES), \
+        sysnames, devices = self._patch_devices(self.DEVICES)
+        with sysnames, devices, \
              patch("src.drm.de.kwin.set_device_output", return_value=True) as setter:
             n = kwin.map_virtual_input("DP-1", timeout=0.05, interval=0.01)
         assert n == 3
@@ -319,14 +333,65 @@ class TestTouchMapping:
 
     def test_map_virtual_input_picks_up_late_devices(self):
         calls = {"n": 0}
-        def devices():
+        def sysnames():
             calls["n"] += 1
-            return self.DEVICES[:2] if calls["n"] < 3 else self.DEVICES[:3]
-        with patch("src.drm.de.kwin.input_devices", side_effect=devices), \
+            return [d["sysname"] for d in (self.DEVICES[:2] if calls["n"] < 3 else self.DEVICES[:3])]
+        by_name = {d["sysname"]: d for d in self.DEVICES}
+        with patch("src.drm.de.kwin.input_device_sysnames", side_effect=sysnames), \
+             patch("src.drm.de.kwin.input_device", side_effect=lambda s: by_name[s]), \
              patch("src.drm.de.kwin.set_device_output", return_value=True) as setter:
             n = kwin.map_virtual_input("DP-1", timeout=0.2, interval=0.01)
         assert n == 1
         setter.assert_called_once_with("event12", "DP-1")
+
+    def test_map_virtual_input_reads_each_device_once(self):
+        by_name = {d["sysname"]: d for d in self.DEVICES}
+        reads: list[str] = []
+        def read(sysname):
+            reads.append(sysname)
+            return by_name[sysname]
+        with patch("src.drm.de.kwin.input_device_sysnames", return_value=list(by_name)), \
+             patch("src.drm.de.kwin.input_device", side_effect=read), \
+             patch("src.drm.de.kwin.set_device_output", return_value=True):
+            kwin.map_virtual_input("DP-1", timeout=0.05, interval=0.01)
+        assert sorted(reads) == sorted(by_name)
+
+    def test_map_virtual_input_retries_unready_devices(self):
+        dev = dict(self.DEVICES[2])
+        reads = {"n": 0}
+        def read(sysname):
+            reads["n"] += 1
+            return dict(dev, name="" if reads["n"] == 1 else dev["name"])
+        with patch("src.drm.de.kwin.input_device_sysnames", return_value=["event12"]), \
+             patch("src.drm.de.kwin.input_device", side_effect=read), \
+             patch("src.drm.de.kwin.set_device_output", return_value=True) as setter:
+            n = kwin.map_virtual_input("DP-1", timeout=0.2, interval=0.01)
+        assert n == 1
+        setter.assert_called_once_with("event12", "DP-1")
+        assert reads["n"] >= 2
+
+    def test_map_virtual_input_does_not_clear_the_stop_event(self):
+        # A stop that arrives just after start_input_mapping() must not be lost.
+        stop = threading.Event()
+        stop.set()
+        with patch("src.drm.de.kwin.input_device_sysnames", return_value=[]):
+            assert kwin.map_virtual_input("DP-1", timeout=1.0, stop_event=stop) == 0
+        assert stop.is_set()
+
+    def test_start_input_mapping_uses_a_new_stop_event(self):
+        events = []
+        def fake_map(output, timeout=30.0, interval=0.5, stop_event=None):
+            events.append(stop_event)
+            return 0
+        with patch("src.drm.de.kwin.map_virtual_input", side_effect=fake_map):
+            first = kwin.start_input_mapping("DP-1")
+            first.join(timeout=1)
+            second = kwin.start_input_mapping("DP-1")
+            second.join(timeout=1)
+        assert len(events) == 2
+        assert events[0] is not events[1]
+        assert events[0].is_set()  # the second watcher stops the first
+        assert not events[1].is_set()
 
     def test_stop_input_mapping_resets_only_our_mapped_devices(self):
         devs = [dict(d, output="DP-1") for d in self.DEVICES]
@@ -337,11 +402,17 @@ class TestTouchMapping:
             ("event12", ""), ("event13", ""), ("event15", "")]
 
     def test_set_device_output_uses_kwin_dbus(self):
-        with patch("src.drm.de.kwin._run_in_session", return_value=_cp()) as run:
+        with patch("src.drm.de.kwin._run_in_session", return_value=_cp()) as run, \
+             patch("src.drm.de.kwin._busctl_get", return_value="DP-1"):
             assert kwin.set_device_output("event12", "DP-1") is True
         assert run.call_args[0][0] == ["busctl", "--user", "set-property", "org.kde.KWin",
                                        "/org/kde/KWin/InputDevice/event12", "org.kde.KWin.InputDevice",
                                        "outputName", "s", "DP-1"]
+
+    def test_set_device_output_false_when_kwin_ignores_the_name(self):
+        with patch("src.drm.de.kwin._run_in_session", return_value=_cp()), \
+             patch("src.drm.de.kwin._busctl_get", return_value=""):
+            assert kwin.set_device_output("event12", "DP-1") is False
 
     def test_input_devices_parses_busctl_json(self):
         values = {
