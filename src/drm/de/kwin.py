@@ -346,6 +346,7 @@ def restore_outputs(specs: dict[str, dict[str, object]]) -> bool:
 
 _KWIN_INPUT = ("org.kde.KWin", "/org/kde/KWin/InputDevice")
 _mapping_stop = threading.Event()
+_mapping_lock = threading.Lock()
 
 
 def _busctl_get(path: str, iface: str, prop: str) -> Any:
@@ -359,20 +360,27 @@ def _busctl_get(path: str, iface: str, prop: str) -> Any:
         return None
 
 
+def input_device_sysnames() -> list[str]:
+    """sysnames of the input devices KWin currently knows about."""
+    names = _busctl_get(_KWIN_INPUT[1], "org.kde.KWin.InputDeviceManager", "devicesSysNames")
+    return [str(name) for name in names or []]
+
+
+def input_device(sysname: str) -> dict[str, Any]:
+    """One KWin input device with its name, touch/tablet flags and mapped output."""
+    path = f"{_KWIN_INPUT[1]}/{sysname}"
+    return {
+        "sysname": sysname,
+        "name": _busctl_get(path, "org.kde.KWin.InputDevice", "name") or "",
+        "touch": bool(_busctl_get(path, "org.kde.KWin.InputDevice", "touch")),
+        "tablet": bool(_busctl_get(path, "org.kde.KWin.InputDevice", "tabletTool")),
+        "output": _busctl_get(path, "org.kde.KWin.InputDevice", "outputName") or "",
+    }
+
+
 def input_devices() -> list[dict[str, Any]]:
     """List KWin input devices with name, touch/tablet flags and mapped output."""
-    names = _busctl_get(_KWIN_INPUT[1], "org.kde.KWin.InputDeviceManager", "devicesSysNames")
-    devices: list[dict[str, Any]] = []
-    for sysname in names or []:
-        path = f"{_KWIN_INPUT[1]}/{sysname}"
-        devices.append({
-            "sysname": sysname,
-            "name": _busctl_get(path, "org.kde.KWin.InputDevice", "name") or "",
-            "touch": bool(_busctl_get(path, "org.kde.KWin.InputDevice", "touch")),
-            "tablet": bool(_busctl_get(path, "org.kde.KWin.InputDevice", "tabletTool")),
-            "output": _busctl_get(path, "org.kde.KWin.InputDevice", "outputName") or "",
-        })
-    return devices
+    return [input_device(sysname) for sysname in input_device_sysnames()]
 
 
 def _is_sunshine_pointer_device(dev: dict[str, Any]) -> bool:
@@ -386,33 +394,69 @@ def set_device_output(sysname: str, output: str) -> bool:
     result = _run_in_session(["busctl", "--user", "set-property", _KWIN_INPUT[0],
                               f"{_KWIN_INPUT[1]}/{sysname}", "org.kde.KWin.InputDevice",
                               "outputName", "s", output])
-    return bool(result and result.returncode == 0)
+    if not result or result.returncode != 0:
+        return False
+    # KWin's setOutputName() silently ignores a name it does not know (for
+    # example the virtual output is not registered yet).  Confirm the value.
+    return _busctl_get(f"{_KWIN_INPUT[1]}/{sysname}", "org.kde.KWin.InputDevice",
+                       "outputName") == output
 
 
-def map_virtual_input(output: str, timeout: float = 30.0, interval: float = 0.5) -> int:
+def map_virtual_input(
+    output: str,
+    timeout: float = 30.0,
+    interval: float = 0.5,
+    stop_event: threading.Event | None = None,
+) -> int:
     """
     Wait for Sunshine's virtual touch/pen devices to appear and map them to
-    *output*.  Returns the number of devices mapped.  Stops early when
-    stop_input_mapping() is called (e.g. on disconnect).
+    *output*.  Returns the number of devices mapped.  Stops early when the
+    watcher's stop event is set (see start_input_mapping/stop_input_mapping).
+
+    Only the device name list is polled.  Each device's properties are read
+    once, so a desktop with many input devices does not spawn four busctl
+    calls per device per poll.
     """
-    _mapping_stop.clear()
+    stop = _mapping_stop if stop_event is None else stop_event
     mapped: set[str] = set()
+    inspected: set[str] = set()
+    names: dict[str, str] = {}
     deadline = time.monotonic() + timeout
-    while not _mapping_stop.is_set():
-        for dev in input_devices():
-            if dev["sysname"] in mapped or not _is_sunshine_pointer_device(dev):
+    while not stop.is_set():
+        for sysname in input_device_sysnames():
+            if sysname in mapped:
                 continue
-            if dev["output"] == output or set_device_output(dev["sysname"], output):
-                print(f"  ✓ Mapped {dev['name']} to {output}")
-                mapped.add(dev["sysname"])
+            if sysname in inspected:
+                if sysname not in names:
+                    continue
+            else:
+                dev = input_device(sysname)
+                if not dev["name"]:
+                    continue  # KWin has not finished registering it yet
+                inspected.add(sysname)
+                if not _is_sunshine_pointer_device(dev):
+                    continue
+                names[sysname] = dev["name"]
+            if set_device_output(sysname, output):
+                print(f"  ✓ Mapped {names[sysname]} to {output}")
+                mapped.add(sysname)
         if time.monotonic() >= deadline:
             break
-        _mapping_stop.wait(interval)
+        stop.wait(interval)
     return len(mapped)
 
 
 def start_input_mapping(output: str) -> threading.Thread:
-    thread = threading.Thread(target=map_virtual_input, args=(output,), daemon=True,
+    global _mapping_stop
+    with _mapping_lock:
+        previous = _mapping_stop
+        stop = threading.Event()
+        _mapping_stop = stop
+    # A watcher from an earlier session must not clear a stop request that
+    # belongs to the new watcher.
+    previous.set()
+    thread = threading.Thread(target=map_virtual_input, args=(output,),
+                              kwargs={"stop_event": stop}, daemon=True,
                               name="kwin-touch-mapping")
     thread.start()
     return thread
@@ -420,7 +464,9 @@ def start_input_mapping(output: str) -> threading.Thread:
 
 def stop_input_mapping() -> None:
     """Stop the watcher and drop our mapping so KWin uses its default again."""
-    _mapping_stop.set()
+    with _mapping_lock:
+        stop = _mapping_stop
+    stop.set()
     for dev in input_devices():
         if _is_sunshine_pointer_device(dev) and dev["output"]:
             _ = set_device_output(dev["sysname"], "")
