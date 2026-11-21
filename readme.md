@@ -105,6 +105,16 @@ The restore state is built from `hyprctl -j monitors`, preserving the live mode,
 
 On KDE Plasma (Wayland), the daemon does the same through `kscreen-doctor`: physical outputs are disabled via KWin while the virtual display is active and re-enabled with their saved mode, position, scale, rotation and primary/priority on disconnect. `kscreen-doctor` ships with Plasma (`libkscreen`); if it is missing, the daemon falls back to direct DRM CRTC handling.
 
+Outputs that you disabled in KDE stay disabled. For example, with the internal panel turned off in an "external monitor only" profile, the daemon uses the external monitor and leaves the panel off.
+
+While a stream is active, the daemon also:
+
+- Restarts `maliit-keyboard` / `plasma-keyboard` after connect, after disconnect and after a real monitor hotplug. Those keyboards size themselves to the output they start on, so a restart makes them fit the new layout. Remove any `killall maliit-keyboard` Do/Undo command from Sunshine: the daemon does this itself now, and `killall` fails when the keyboard is not running.
+- Disconnects the virtual display when KWin exits, for example on logout. The next login then starts on the physical monitor instead a phantom output.
+- Skips a monitor that was unplugged during the stream, instead of failing the disconnect and leaving the virtual display switched on.
+
+The daemon only restarts a keyboard that KWin itself started, and it limits restarts so KWin does not stop restarting the keyboard.
+
 ### Multi-GPU systems
 
 On systems with both an integrated GPU (iGPU) and a discrete GPU (dGPU), the daemon automatically selects the card with the most connected displays. Override with the `-d` flag if it picks the wrong one:
