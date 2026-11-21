@@ -45,23 +45,14 @@ def clear_kwin_output_config(port: str) -> None:
     try:
         data: Any = json.loads(config_path.read_text())
         # kwinoutputconfig.json may be {"outputs": [...]} or a bare [...]
-        if isinstance(data, list):
-            outputs: list[Any] = data
-            filtered: list[Any] = [o for o in outputs if o.get("name") != port]
-            if len(filtered) < len(outputs):
-                _ = config_path.write_text(json.dumps(filtered, indent=2))
-                print(f"  ✓ Cleared KWin saved config for {port} (was overriding EDID resolution)")
-            else:
-                print(f"  ✓ No stale KWin config for {port}")
-        else:
-            outputs = data.get("outputs", [])
-            original_count: int = len(outputs)
-            data["outputs"] = [o for o in outputs if o.get("name") != port]
-            if len(data["outputs"]) < original_count:
-                _ = config_path.write_text(json.dumps(data, indent=2))
-                print(f"  ✓ Cleared KWin saved config for {port} (was overriding EDID resolution)")
-            else:
-                print(f"  ✓ No stale KWin config for {port}")
+        outputs: list[Any] = data if isinstance(data, list) else data.get("outputs", [])
+        filtered = [o for o in outputs if o.get("name") != port]
+        if len(filtered) == len(outputs):
+            print(f"  ✓ No stale KWin config for {port}")
+            return
+        data = filtered if isinstance(data, list) else {**data, "outputs": filtered}
+        _ = config_path.write_text(json.dumps(data, indent=2))
+        print(f"  ✓ Cleared KWin saved config for {port} (was overriding EDID resolution)")
     except Exception as e:
         print(f"  Warning: Could not update kwinoutputconfig.json: {e}")
 
@@ -393,11 +384,6 @@ def input_device(sysname: str) -> dict[str, Any]:
     }
 
 
-def input_devices() -> list[dict[str, Any]]:
-    """List KWin input devices with name, touch/tablet flags and mapped output."""
-    return [input_device(sysname) for sysname in input_device_sysnames()]
-
-
 def _is_sunshine_pointer_device(dev: dict[str, Any]) -> bool:
     """Sunshine's virtual touchscreen / pen (libvirtualhid, or inputtino's passthrough devices)."""
     name = dev.get("name", "")
@@ -434,26 +420,22 @@ def map_virtual_input(
     """
     stop = _mapping_stop if stop_event is None else stop_event
     mapped: set[str] = set()
-    inspected: set[str] = set()
-    names: dict[str, str] = {}
+    names: dict[str, str | None] = {}
     deadline = time.monotonic() + timeout
     while not stop.is_set():
         for sysname in input_device_sysnames():
             if sysname in mapped:
                 continue
-            if sysname in inspected:
-                if sysname not in names:
-                    continue
-            else:
+            if sysname not in names:
                 dev = input_device(sysname)
                 if not dev["name"]:
                     continue  # KWin has not finished registering it yet
-                inspected.add(sysname)
-                if not _is_sunshine_pointer_device(dev):
-                    continue
-                names[sysname] = dev["name"]
+                names[sysname] = dev["name"] if _is_sunshine_pointer_device(dev) else None
+            name = names[sysname]
+            if name is None:
+                continue
             if set_device_output(sysname, output):
-                print(f"  ✓ Mapped {names[sysname]} to {output}")
+                print(f"  ✓ Mapped {name} to {output}")
                 mapped.add(sysname)
         if time.monotonic() >= deadline:
             break
@@ -482,9 +464,10 @@ def stop_input_mapping() -> None:
     with _mapping_lock:
         stop = _mapping_stop
     stop.set()
-    for dev in input_devices():
+    for sysname in input_device_sysnames():
+        dev = input_device(sysname)
         if _is_sunshine_pointer_device(dev) and dev["output"]:
-            _ = set_device_output(dev["sysname"], "")
+            _ = set_device_output(sysname, "")
 
 
 # ---------------------------------------------------------------------------
