@@ -394,8 +394,9 @@ class TestTouchMapping:
         assert not events[1].is_set()
 
     def test_stop_input_mapping_resets_only_our_mapped_devices(self):
-        devs = [dict(d, output="DP-1") for d in self.DEVICES]
-        with patch("src.drm.de.kwin.input_devices", return_value=devs), \
+        devs = {d["sysname"]: dict(d, output="DP-1") for d in self.DEVICES}
+        with patch("src.drm.de.kwin.input_device_sysnames", return_value=list(devs)), \
+             patch("src.drm.de.kwin.input_device", side_effect=lambda s: devs[s]), \
              patch("src.drm.de.kwin.set_device_output", return_value=True) as setter:
             kwin.stop_input_mapping()
         assert sorted(c.args for c in setter.call_args_list) == [
@@ -414,7 +415,7 @@ class TestTouchMapping:
              patch("src.drm.de.kwin._busctl_get", return_value=""):
             assert kwin.set_device_output("event12", "DP-1") is False
 
-    def test_input_devices_parses_busctl_json(self):
+    def test_input_device_parses_busctl_json(self):
         values = {
             "devicesSysNames": ["event12"], "name": "libvirtualhid Touchscreen",
             "touch": True, "tabletTool": False, "outputName": "",
@@ -422,8 +423,9 @@ class TestTouchMapping:
         def fake(cmd):
             return _cp(out=json.dumps({"type": "x", "data": values[cmd[-1]]}))
         with patch("src.drm.de.kwin._run_in_session", side_effect=fake):
-            assert kwin.input_devices() == [{"sysname": "event12", "name": "libvirtualhid Touchscreen",
-                                             "touch": True, "tablet": False, "output": ""}]
+            assert kwin.input_device("event12") == {"sysname": "event12",
+                                                    "name": "libvirtualhid Touchscreen",
+                                                    "touch": True, "tablet": False, "output": ""}
 
 
 class TestVirtualKeyboardRestart:
