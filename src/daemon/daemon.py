@@ -9,6 +9,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 
 from jeepney import DBusAddress, new_method_call
@@ -19,6 +20,7 @@ from jeepney.low_level import HeaderFields
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src import display
+from src.drm.de import kwin
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +28,8 @@ SOCKET_FILE = "/tmp/sunshineVD.sock"
 SUNSHINE_UNIT_PATH = "/org/freedesktop/systemd1/unit/sunshine_2eservice"
 
 _lock = threading.Lock()
+_watch_disconnect_lock = threading.Lock()
+_op_active = threading.Event()   # set while connect/disconnect is changing outputs
 _state: dict = {
     "connected": False,
     "connect_args": None,       # (width, height, refresh_rate, device)
@@ -101,7 +105,7 @@ def _on_sleep(going_to_sleep: bool) -> None:
 
         if was_connected:
             log.info("Disconnecting virtual display before sleep")
-            ok = display.disconnect()
+            ok = _display_disconnect()
             with _lock:
                 if ok:
                     _state["connected"] = False
@@ -126,7 +130,7 @@ def _on_sleep(going_to_sleep: bool) -> None:
             log.info(
                 "Reconnecting virtual display after wake: %dx%d@%d", width, height, refresh_rate
             )
-            ok = display.connect(width, height, refresh_rate, device=device)
+            ok = _display_connect(width, height, refresh_rate, device=device)
             with _lock:
                 if ok:
                     _state["connected"] = True
@@ -168,13 +172,23 @@ def _get_sunshine_pid() -> int | None:
 
 def _watch_sunshine_pid(pid: int) -> None:
     """Block on a pidfd until Sunshine exits, then disconnect."""
+    _watch_pid(pid, "Sunshine")
+
+
+def _watch_kwin_pid(pid: int) -> None:
+    """Block until KWin exits (the user logged out), then disconnect."""
+    _watch_pid(pid, "KWin")
+
+
+def _watch_pid(pid: int, label: str) -> None:
+    """Block on a pidfd until *pid* exits, then disconnect if still connected."""
     try:
         pidfd = os.pidfd_open(pid)
     except OSError as exc:
         log.warning("pidfd_open(%d) failed: %s", pid, exc)
         return
 
-    log.info("Watching Sunshine PID %d", pid)
+    log.info("Watching %s PID %d", label, pid)
     try:
         while _running:
             ready, _, _ = select.select([pidfd], [], [], 1.0)
@@ -186,11 +200,15 @@ def _watch_sunshine_pid(pid: int) -> None:
     if not _running:
         return
 
-    with _lock:
-        connected = _state["connected"]
-    if connected:
-        log.warning("Sunshine PID %d exited — disconnecting virtual display", pid)
-        ok = display.disconnect()
+    # On logout Sunshine and KWin exit together; serialize their disconnects
+    # so the second one sees the first one's result instead of racing it.
+    with _watch_disconnect_lock:
+        with _lock:
+            connected = _state["connected"]
+        if not connected:
+            return
+        log.warning("%s PID %d exited — disconnecting virtual display", label, pid)
+        ok = _display_disconnect()
         with _lock:
             if ok:
                 _state["connected"] = False
@@ -204,7 +222,7 @@ def _on_shutdown_signal(shutting_down: bool) -> None:
     with _lock:
         connected = _state["connected"]
     if connected:
-        ok = display.disconnect()
+        ok = _display_disconnect()
         with _lock:
             if ok:
                 _state["connected"] = False
@@ -240,7 +258,7 @@ def _on_sunshine_unit_changed(body) -> None:
             connected = _state["connected"]
         if connected:
             log.warning("Sunshine became %s — disconnecting virtual display", state)
-            ok = display.disconnect()
+            ok = _display_disconnect()
             with _lock:
                 if ok:
                     _state["connected"] = False
@@ -316,6 +334,81 @@ def _make_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _display_connect(*args, **kwargs) -> bool:
+    _op_active.set()
+    try:
+        return display.connect(*args, **kwargs)
+    finally:
+        _op_active.clear()
+
+
+def _display_disconnect() -> bool:
+    _op_active.set()
+    try:
+        return display.disconnect()
+    finally:
+        _op_active.clear()
+
+
+# ---------------------------------------------------------------------------
+# Monitor hotplug -> restart the on-screen keyboard
+# ---------------------------------------------------------------------------
+
+_NETLINK_KOBJECT_UEVENT = 15
+
+
+def _is_drm_hotplug(msg: bytes) -> bool:
+    fields = msg.split(b"\0")
+    return b"SUBSYSTEM=drm" in fields and b"HOTPLUG=1" in fields
+
+
+def _hotplug_listener() -> None:
+    """
+    Restart maliit when a physical monitor is plugged in or unplugged: like
+    after connect/disconnect, the keyboard keeps the old layout's size.
+    Our own synthetic uevents (virtual display on/off) are ignored because the
+    virtual connector is excluded and events during an operation only
+    re-baseline the connector set.
+    """
+    try:
+        sock = socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, _NETLINK_KOBJECT_UEVENT)
+        sock.bind((0, 1))
+    except OSError as exc:
+        log.warning("Hotplug listener unavailable: %s", exc)
+        return
+
+    last = display.physical_connectors()
+    try:
+        while _running:
+            ready, _, _ = select.select([sock], [], [], 1.0)
+            if not ready:
+                continue
+            if not _is_drm_hotplug(sock.recv(65536)):
+                continue
+            # Let the kernel/compositor settle, then drain the burst of events.
+            time.sleep(1.0)
+            sock.setblocking(False)
+            try:
+                while True:
+                    sock.recv(65536)
+            except (BlockingIOError, OSError):
+                pass
+            sock.setblocking(True)
+
+            now = display.physical_connectors()
+            if _op_active.is_set():
+                last = now
+                continue
+            if now != last:
+                added, removed = sorted(now - last), sorted(last - now)
+                log.info("Monitor hotplug: connected %s, disconnected %s — restarting on-screen keyboard",
+                         added or "-", removed or "-")
+                last = now
+                kwin.restart_virtual_keyboard_later(delay=1.5)
+    finally:
+        sock.close()
+
+
 def _handle_command(args: list[str]) -> None:
     try:
         parsed = _make_parser().parse_args(args)
@@ -330,7 +423,7 @@ def _handle_command(args: list[str]) -> None:
         log.info(
             "Connecting virtual display: %dx%d@%d", parsed.width, parsed.height, parsed.refresh_rate
         )
-        ok = display.connect(
+        ok = _display_connect(
             parsed.width, parsed.height, parsed.refresh_rate, device=parsed.device
         )
         with _lock:
@@ -355,9 +448,20 @@ def _handle_command(args: list[str]) -> None:
                     name="sunshine-pid-watch",
                 ).start()
 
+            # Logging out of KDE ends KWin: restore the physical monitor then too.
+            if display.active_backend() == "kwin":
+                kwin_pid = kwin.find_kwin_pid()
+                if kwin_pid:
+                    threading.Thread(
+                        target=_watch_kwin_pid,
+                        args=(kwin_pid,),
+                        daemon=True,
+                        name="kwin-pid-watch",
+                    ).start()
+
     elif parsed.disconnect:
         log.info("Disconnecting virtual display")
-        ok = display.disconnect()
+        ok = _display_disconnect()
         with _lock:
             if ok:
                 _state["connected"] = False
@@ -396,7 +500,7 @@ def _shutdown(signum, frame) -> None:
 
     if connected:
         log.info("Disconnecting virtual display before exit")
-        ok = display.disconnect()
+        ok = _display_disconnect()
         with _lock:
             if ok:
                 _state["connected"] = False
@@ -433,6 +537,7 @@ def main() -> None:
 
     sleep_thread = threading.Thread(target=_dbus_listener, daemon=True, name="dbus-listener")
     sleep_thread.start()
+    threading.Thread(target=_hotplug_listener, daemon=True, name="hotplug-listener").start()
 
     try:
         os.remove(SOCKET_FILE)

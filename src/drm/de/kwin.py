@@ -8,6 +8,7 @@ import json
 import os
 import pwd
 import shutil
+import signal
 import stat
 import subprocess
 import threading
@@ -186,6 +187,19 @@ def _run_in_session(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
     except (OSError, subprocess.TimeoutExpired) as e:
         print(f"    {cmd[-1] if cmd else 'command'} failed: {e}")
         return None
+
+
+def find_kwin_pid() -> int | None:
+    """PID of the running kwin_wayland, or None when no KWin session exists."""
+    for pid, comm, _ in _processes():
+        if comm == "kwin_wayland":
+            return pid
+    return None
+
+
+def session_alive() -> bool:
+    """False once KWin has exited, e.g. after the user logged out."""
+    return find_kwin_pid() is not None
 
 
 def kscreen_doctor(args: list[str]) -> subprocess.CompletedProcess[str] | None:
@@ -393,3 +407,67 @@ def stop_input_mapping() -> None:
     for dev in input_devices():
         if _is_sunshine_pointer_device(dev) and dev["output"]:
             _ = set_device_output(dev["sysname"], "")
+
+
+# ---------------------------------------------------------------------------
+# On-screen keyboard restart
+#
+# maliit-keyboard (and plasma-keyboard) size themselves to the output they
+# start on and don't resize when outputs come and go: after a connect the
+# keyboard keeps the physical monitor's size on the virtual display, and after
+# a disconnect it keeps the phone's size.  KWin launches the keyboard itself
+# and starts it again when it exits, so terminating it once the new layout has
+# settled makes it come back at the right size.
+# ---------------------------------------------------------------------------
+
+_KEYBOARD_NAMES = ("maliit-keyboard", "plasma-keyboard")
+
+
+def _processes() -> list[tuple[int, str, int]]:
+    """Return (pid, comm, ppid) for every process."""
+    procs: list[tuple[int, str, int]] = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            comm = (proc / "comm").read_text().strip()
+            ppid = 0
+            for line in (proc / "status").read_text().splitlines():
+                if line.startswith("PPid:"):
+                    ppid = int(line.split()[1])
+                    break
+        except (OSError, ValueError):
+            continue
+        procs.append((int(proc.name), comm, ppid))
+    return procs
+
+
+def restart_virtual_keyboard() -> list[int]:
+    """
+    Terminate KWin-managed on-screen keyboards so KWin restarts them at the
+    current output size.  Keyboards not started by KWin are left alone, since
+    nothing would bring them back.  Returns the PIDs that were signalled.
+    """
+    procs = _processes()
+    kwin_pids = {pid for pid, comm, _ in procs if comm == "kwin_wayland"}
+    restarted: list[int] = []
+    for pid, comm, ppid in procs:
+        if comm in _KEYBOARD_NAMES and ppid in kwin_pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                restarted.append(pid)
+                print(f"  ✓ Restarted {comm} (pid {pid}) so it resizes to the new layout")
+            except OSError as e:
+                print(f"  Warning: could not restart {comm} (pid {pid}): {e}")
+    return restarted
+
+
+def restart_virtual_keyboard_later(delay: float = 1.0) -> threading.Thread:
+    """Restart the on-screen keyboard after *delay* seconds, in the background."""
+    def run() -> None:
+        time.sleep(delay)
+        _ = restart_virtual_keyboard()
+
+    thread = threading.Thread(target=run, daemon=True, name="kwin-keyboard-restart")
+    thread.start()
+    return thread

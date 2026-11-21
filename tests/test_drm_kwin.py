@@ -326,3 +326,55 @@ class TestTouchMapping:
         with patch("src.drm.de.kwin._run_in_session", side_effect=fake):
             assert kwin.input_devices() == [{"sysname": "event12", "name": "libvirtualhid Touchscreen",
                                              "touch": True, "tablet": False, "output": ""}]
+
+
+class TestVirtualKeyboardRestart:
+    PROCS = [
+        (1359, "kwin_wayland", 1346),
+        (44326, "maliit-keyboard", 1359),    # started by KWin -> restart
+        (50000, "maliit-keyboard", 2000),    # started by something else -> leave alone
+        (50001, "plasma-keyboard", 1359),    # Plasma's newer keyboard, KWin-managed
+        (50002, "plasmashell", 1),
+    ]
+
+    def test_only_kwin_managed_keyboards_are_restarted(self):
+        with patch("src.drm.de.kwin._processes", return_value=self.PROCS), \
+             patch("os.kill") as kill:
+            assert kwin.restart_virtual_keyboard() == [44326, 50001]
+        import signal
+        assert sorted(c.args for c in kill.call_args_list) == [(44326, signal.SIGTERM), (50001, signal.SIGTERM)]
+
+    def test_no_kwin_means_nothing_killed(self):
+        procs = [p for p in self.PROCS if p[1] != "kwin_wayland"]
+        with patch("src.drm.de.kwin._processes", return_value=procs), patch("os.kill") as kill:
+            assert kwin.restart_virtual_keyboard() == []
+        kill.assert_not_called()
+
+    def test_kill_failure_is_non_fatal(self):
+        with patch("src.drm.de.kwin._processes", return_value=self.PROCS[:2]), \
+             patch("os.kill", side_effect=PermissionError("nope")):
+            assert kwin.restart_virtual_keyboard() == []
+
+    def test_restart_later_waits_then_restarts(self):
+        with patch("src.drm.de.kwin.restart_virtual_keyboard") as restart, \
+             patch("src.drm.de.kwin.time.sleep") as sleep:
+            kwin.restart_virtual_keyboard_later(delay=1.5).join(timeout=2)
+        sleep.assert_called_once_with(1.5)
+        restart.assert_called_once()
+
+    def test_processes_reads_proc(self):
+        procs = kwin._processes()
+        me = [p for p in procs if p[0] == os.getpid()]
+        assert me and me[0][2] == os.getppid()
+
+
+class TestKwinSessionAlive:
+    def test_find_kwin_pid(self):
+        with patch("src.drm.de.kwin._processes", return_value=[(10, "bash", 1), (1359, "kwin_wayland", 1346)]):
+            assert kwin.find_kwin_pid() == 1359
+            assert kwin.session_alive() is True
+
+    def test_no_kwin_after_logout(self):
+        with patch("src.drm.de.kwin._processes", return_value=[(10, "bash", 1), (11, "sddm", 1)]):
+            assert kwin.find_kwin_pid() is None
+            assert kwin.session_alive() is False

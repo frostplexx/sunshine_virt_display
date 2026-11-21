@@ -25,6 +25,7 @@ from src.drm.de.kwin import clear_kwin_output_config
 from src.edid import create_edid, find_best_vic_resolution, get_pixel_clock_info
 
 SCRIPT_DIR = Path(__file__).parent.parent.absolute()
+DRM_SYSFS = Path("/sys/class/drm")
 
 
 def _use_hyprland_safe_path(card_name: str) -> bool:
@@ -294,12 +295,60 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
         # Sunshine's virtual touchscreen/pen appear right after this; map them
         # to the virtual output instead of the now-hidden physical one.
         _ = kwin.start_input_mapping(empty_port)
+        # maliit keeps the physical monitor's size until it is restarted.
+        _ = kwin.restart_virtual_keyboard_later()
 
     print(f"\n✓ Virtual display successfully connected!")
     print(f"  Port: {card_name}-{empty_port}")
     print(f"  Resolution: {width}x{height}@{refresh_rate}Hz")
 
     return True
+
+
+def _output_connected(card_name: str, output: str) -> bool:
+    try:
+        return (DRM_SYSFS / f"{card_name}-{output}" / "status").read_text().strip() == "connected"
+    except OSError:
+        return False
+
+
+def virtual_connector() -> str | None:
+    """sysfs name (e.g. 'card1-DP-1') of the active virtual display, if any."""
+    try:
+        lines = (SCRIPT_DIR / "virt_display.state").read_text().strip().split("\n")
+    except OSError:
+        return None
+    return f"{lines[0]}-{lines[1]}" if len(lines) > 1 and lines[0] and lines[1] else None
+
+
+def physical_connectors() -> frozenset[str]:
+    """Connected physical connectors across all cards, excluding the virtual display."""
+    virtual = virtual_connector()
+    connected: set[str] = set()
+    for status in DRM_SYSFS.glob("card*-*/status"):
+        name = status.parent.name
+        if name == virtual or "Writeback" in name or "Virtual" in name:
+            continue
+        try:
+            if status.read_text().strip() == "connected":
+                connected.add(name)
+        except OSError:
+            continue
+    return frozenset(connected)
+
+
+def active_backend() -> str | None:
+    """Compositor backend of the active virtual display session, if any."""
+    state_file = SCRIPT_DIR / "virt_display.state"
+    try:
+        lines = state_file.read_text().strip().split("\n")
+    except OSError:
+        return None
+    if len(lines) > 5 and lines[5]:
+        return lines[5]
+    if len(lines) > 4 and lines[4] not in ("", "{}"):
+        return "hyprland"  # state files from before the KWin backend
+    return None
 
 
 def disconnect() -> bool:
@@ -340,8 +389,23 @@ def disconnect() -> bool:
 
     if backend is not None:
         print(f"\nStep 1: Restoring physical outputs via {backend_name}...")
-        if backend.restore_outputs(restore_specs):
+        # A monitor unplugged during the stream can't be restored; trying would
+        # fail the whole disconnect and leave the virtual display stuck on.
+        unplugged = sorted(o for o in restore_specs if not _output_connected(card_name, o))
+        if unplugged:
+            print(f"  ⚠ No longer connected (unplugged?): {', '.join(unplugged)} — skipping")
+            restore_specs = {o: s for o, s in restore_specs.items() if o not in unplugged}
+        if not restore_specs:
+            print("  ⚠ No physical outputs left to restore")
+        elif backend.restore_outputs(restore_specs):
             print(f"  ✓ Restored: {', '.join(restore_specs.keys())}")
+        elif backend_name == "kwin" and not kwin.session_alive():
+            # Logged out: there is no compositor left to restore into.  The
+            # physical outputs were only disabled inside KWin, never at the
+            # kernel level, so once the virtual output is gone the login
+            # screen and the next session start on the physical monitor.
+            print("  ⚠ KWin session has ended (logout) — skipping compositor restore,")
+            print("    removing the virtual display so the next session uses the physical monitor")
         else:
             print(f"\n✗ {backend_name} restore failed — state file preserved so disconnect can be retried")
             return False
@@ -417,6 +481,10 @@ def disconnect() -> bool:
     # Without a hotplug uevent the compositor keeps the (now disconnected)
     # virtual output around as an invisible extra screen.
     _ = notify_hotplug(card_name)
+
+    if backend_name == "kwin" and backend is not None:
+        # ...and maliit keeps the phone's size until it is restarted.
+        _ = kwin.restart_virtual_keyboard_later()
 
     state_file.unlink()
 
