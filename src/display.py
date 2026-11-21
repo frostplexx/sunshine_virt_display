@@ -447,12 +447,18 @@ def disconnect() -> bool:
         # that can confuse the compositor (KWin crashes or stops rendering if
         # all outputs disappear at once).
         print("\nStep 1: Turning on previous displays...")
-        for disp in previous_displays:
-            if disp:
-                status_path = f"/sys/class/drm/{card_name}-{disp}/status"
-                _ = run_command(f"sh -c 'echo on > {status_path}'")
-                print(f"  ✓ Turned on {disp}")
-        if any(previous_displays):
+        # A monitor unplugged during the stream can't be restored; trying
+        # would fail the whole disconnect and leave the virtual display on.
+        unplugged = sorted(d for d in previous_displays
+                           if d and not _output_connected(card_name, d))
+        for disp in unplugged:
+            print(f"  ⚠ {disp}: no longer connected (unplugged?) — skipping")
+        restorable = [d for d in previous_displays if d and d not in unplugged]
+        for disp in restorable:
+            status_path = f"/sys/class/drm/{card_name}-{disp}/status"
+            _ = run_command(f"sh -c 'echo on > {status_path}'")
+            print(f"  ✓ Turned on {disp}")
+        if restorable:
             _ = notify_hotplug(card_name)
 
         # Force CRTC assignment and verify each display is actually up.
@@ -461,10 +467,7 @@ def disconnect() -> bool:
         # confirmed active so the state file is never deleted on a partial restore.
         print("\nStep 2: Restoring physical displays...")
         all_restored = True
-        for disp in previous_displays:
-            if not disp:
-                continue
-
+        for disp in restorable:
             restored = False
             for attempt in range(1, 4):
                 if attempt > 1:

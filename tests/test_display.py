@@ -616,6 +616,40 @@ class TestDisconnect:
         on_cmds = [c for c in cmds if "echo on" in c]
         assert len(on_cmds) >= 2
 
+    def test_direct_path_skips_unplugged_monitor(self, tmp_path):
+        (tmp_path / "virt_display.state").write_text(
+            "card1\nDP-2\nHDMI-1,HDMI-2\n/x/edid_override\n{}\n")
+        mock_run = MagicMock(return_value=_ok_run())
+        mock_force = MagicMock(return_value=True)
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._output_connected", side_effect=lambda c, o: o == "HDMI-1"), \
+             patch("src.display.run_command", mock_run), \
+             patch("src.display.force_crtc_assignment", mock_force), \
+             patch("src.display.wait_for_output_ready", return_value=(True, "1920x1080")), \
+             patch("src.display.release_crtc", return_value=True):
+            assert disconnect() is True
+        assert [c.args for c in mock_force.call_args_list] == [("card1", "HDMI-1")]
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert not any("HDMI-2/status" in c and "echo on" in c for c in cmds)
+        assert not (tmp_path / "virt_display.state").exists()
+
+    def test_direct_path_all_unplugged_still_removes_virtual_display(self, tmp_path):
+        (tmp_path / "virt_display.state").write_text(
+            "card1\nDP-2\nHDMI-1\n/x/edid_override\n{}\n")
+        mock_run = MagicMock(return_value=_ok_run())
+        mock_force = MagicMock(return_value=True)
+        with patch("src.display.SCRIPT_DIR", tmp_path), \
+             patch("src.display._output_connected", return_value=False), \
+             patch("src.display.run_command", mock_run), \
+             patch("src.display.force_crtc_assignment", mock_force), \
+             patch("src.display.release_crtc", return_value=True):
+            assert disconnect() is True
+        mock_force.assert_not_called()
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert any("echo off > /sys/class/drm/card1-DP-2/status" in c for c in cmds)
+        assert any("/dev/null >" in c and "edid_override" in c for c in cmds)
+        assert not (tmp_path / "virt_display.state").exists()
+
     def test_skips_empty_display_names(self, tmp_path):
         self._write_state(tmp_path, "card1", "DP-2", [""])
         mock_run = MagicMock(return_value=_ok_run())
