@@ -3,6 +3,35 @@ set -euo pipefail
 
 INSTALL_DIR=/opt/sunshine-vd
 SERVICE_DEST=/etc/systemd/system/sunshineVD.service
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+REMOVE_SUNSHINE_CONFIG=true
+SUNSHINE_CONFIG=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --keep-sunshine-config)
+            REMOVE_SUNSHINE_CONFIG=false
+            shift
+            ;;
+        --sunshine-config)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --sunshine-config needs a path" >&2
+                exit 2
+            fi
+            SUNSHINE_CONFIG="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: sudo ./uninstall.sh [--keep-sunshine-config] [--sunshine-config PATH]"
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
 
 [[ $EUID -eq 0 ]] || { echo "Run as root: sudo ./uninstall.sh"; exit 1; }
 
@@ -10,64 +39,28 @@ echo "==> Stopping and disabling systemd service..."
 systemctl stop sunshineVD || true
 systemctl disable sunshineVD || true
 
+if [[ "$REMOVE_SUNSHINE_CONFIG" == true ]]; then
+    echo "==> Removing Sunshine global_prep_cmd..."
+    TARGET_USER="${SUDO_USER:-$(logname 2>/dev/null || true)}"
+    HELPER=(python3 "$SCRIPT_DIR/scripts/sunshine_prep_cmd.py" uninstall)
+    if [[ -n "$TARGET_USER" ]]; then
+        HELPER+=(--user "$TARGET_USER")
+    fi
+    if [[ -n "$SUNSHINE_CONFIG" ]]; then
+        HELPER+=(--config "$SUNSHINE_CONFIG")
+    fi
+    if ! "${HELPER[@]}"; then
+        echo "Warning: could not remove the Sunshine Do/Undo command automatically."
+        echo "Remove it manually from your Sunshine configuration."
+    fi
+fi
+
 echo "==> Removing systemd service file..."
 rm -f "$SERVICE_DEST"
 systemctl daemon-reload
 
 echo "==> Removing project files..."
 rm -rf "$INSTALL_DIR"
-
-echo "==> Removing Sunshine global_prep_cmd..."
-TARGET_USER=${SUDO_USER:-$(logname 2>/dev/null || true)}
-if [ -z "$TARGET_USER" ]; then
-    TARGET_HOME="/root"
-else
-    TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-fi
-
-SUNSHINE_CONF=""
-POSSIBLE_LOCATIONS=(
-    "$TARGET_HOME/.config/sunshine/sunshine.conf"
-    "/root/.config/sunshine/sunshine.conf"
-    "/etc/sunshine/sunshine.conf"
-)
-
-for loc in "${POSSIBLE_LOCATIONS[@]}"; do
-    if [ -f "$loc" ]; then
-        SUNSHINE_CONF="$loc"
-        break
-    fi
-done
-
-if [ -z "$SUNSHINE_CONF" ]; then
-    echo "Sunshine config not found in common locations, skipping automation."
-else
-    python3 -c "
-import sys, json, os, re
-CONF_PATH = sys.argv[1]
-nc_do = 'sh -c \"echo --connect,--width,\${SUNSHINE_CLIENT_WIDTH},--height,\${SUNSHINE_CLIENT_HEIGHT},--refresh-rate,\${SUNSHINE_CLIENT_FPS} | nc -U /tmp/sunshineVD.sock\"'
-nc_undo = 'sh -c \"echo --disconnect | nc -U /tmp/sunshineVD.sock\"'
-socat_do = 'sh -c \"echo --connect,--width,\${SUNSHINE_CLIENT_WIDTH},--height,\${SUNSHINE_CLIENT_HEIGHT},--refresh-rate,\${SUNSHINE_CLIENT_FPS} | socat - UNIX-CONNECT:/tmp/sunshineVD.sock\"'
-socat_undo = 'sh -c \"echo --disconnect | socat - UNIX-CONNECT:/tmp/sunshineVD.sock\"'
-
-with open(CONF_PATH, 'r') as f: lines = f.readlines()
-new_lines = []
-for line in lines:
-    if line.startswith('global_prep_cmd'):
-        match = re.match(r'global_prep_cmd\s*=\s*(.*)', line)
-        if match:
-            try: cmds = json.loads(match.group(1).strip())
-            except Exception: cmds = []
-            if not isinstance(cmds, list): cmds = []
-            cmds = [cmd for cmd in cmds if not ((cmd.get('do') == nc_do and cmd.get('undo') == nc_undo) or (cmd.get('do') == socat_do and cmd.get('undo') == socat_undo))]
-            if len(cmds) > 0: new_lines.append(f'global_prep_cmd = {json.dumps(cmds, separators=(\",\", \":\"))}\\n')
-        else: new_lines.append(line)
-    else: new_lines.append(line)
-
-with open(CONF_PATH, 'w') as f: f.writelines(new_lines)
-" "$SUNSHINE_CONF"
-    echo "Removed Do/Undo commands from $SUNSHINE_CONF"
-fi
 
 echo ""
 echo "Done. Uninstall complete."
