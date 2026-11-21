@@ -123,7 +123,7 @@ class TestWaitForOutputReady:
              patch("src.drm.crtc.sysfs_port_to_drm_name", return_value=("DisplayPort", 1)), \
              patch("time.sleep"), \
              patch("pathlib.Path.read_text", return_value="disconnected"):
-            ready, mode = wait_for_output_ready("card1", "DP-1", 1920, 1080, timeout=0.01)
+            ready, mode = wait_for_output_ready("card1", "DP-1", timeout=0.01)
         assert ready is False
         assert mode == ""
 
@@ -135,7 +135,7 @@ class TestWaitForOutputReady:
              patch("time.sleep"), \
              patch("pathlib.Path.read_text", return_value="connected"), \
              patch("pathlib.Path.exists", return_value=True):
-            ready, mode = wait_for_output_ready("card1", "DP-1", 1920, 1080, timeout=1.0)
+            ready, mode = wait_for_output_ready("card1", "DP-1", timeout=1.0)
         assert ready is True
 
     def test_skips_crtc_check_when_no_libdrm(self):
@@ -144,7 +144,7 @@ class TestWaitForOutputReady:
              patch("time.sleep"), \
              patch("pathlib.Path.read_text", return_value="connected"):
             # libdrm is None → no CRTC check → never returns True → timeout
-            ready, _ = wait_for_output_ready("card1", "DP-1", 1920, 1080, timeout=0.01)
+            ready, _ = wait_for_output_ready("card1", "DP-1", timeout=0.01)
         assert ready is False
 
     def test_handles_oserror_in_read(self):
@@ -152,7 +152,7 @@ class TestWaitForOutputReady:
              patch("src.drm.crtc.sysfs_port_to_drm_name", return_value=("DisplayPort", 1)), \
              patch("time.sleep"), \
              patch("pathlib.Path.read_text", side_effect=OSError("perm")):
-            ready, _ = wait_for_output_ready("card1", "DP-1", 1920, 1080, timeout=0.01)
+            ready, _ = wait_for_output_ready("card1", "DP-1", timeout=0.01)
         assert ready is False
 
     def test_mode_string_extracted_from_sysfs(self):
@@ -171,7 +171,7 @@ class TestWaitForOutputReady:
              patch("time.sleep"), \
              patch("pathlib.Path.read_text", side_effect=read_text), \
              patch("pathlib.Path.exists", return_value=True):
-            ready, mode = wait_for_output_ready("card1", "DP-1", 1920, 1080, timeout=1.0)
+            ready, mode = wait_for_output_ready("card1", "DP-1", timeout=1.0)
         assert ready is True
         assert mode == "1920x1080"
 

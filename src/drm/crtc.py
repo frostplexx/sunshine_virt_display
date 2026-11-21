@@ -75,8 +75,6 @@ def _check_crtc_active(
 def wait_for_output_ready(
     card_name: str,
     port: str,
-    _width: int,
-    _height: int,
     timeout: float = 10.0,
 ) -> tuple[bool, str]:
     """

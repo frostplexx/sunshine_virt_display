@@ -322,7 +322,9 @@ def _find_free_crtc(
                 libdrm.drmModeFreeEncoder(enc_p)
         libdrm.drmModeFreeConnector(other_p)
 
-    # Try each encoder the connector supports
+    # Try each encoder the connector supports, preferring an unused CRTC.
+    # Fall back to the first compatible CRTC (even if another output uses it).
+    fallback = 0
     for ei in range(conn.count_encoders):
         enc_p = libdrm.drmModeGetEncoder(fd, conn.encoders[ei])
         if not enc_p:
@@ -337,20 +339,9 @@ def _find_free_crtc(
             crtc_id: int = r.crtcs[ci]
             if crtc_id not in used_crtcs:
                 return crtc_id
+            fallback = fallback or crtc_id
 
-    # Fallback: steal any compatible CRTC (even if in use)
-    for ei in range(conn.count_encoders):
-        enc_p = libdrm.drmModeGetEncoder(fd, conn.encoders[ei])
-        if not enc_p:
-            continue
-        possible = enc_p.contents.possible_crtcs
-        libdrm.drmModeFreeEncoder(enc_p)
-
-        for ci in range(r.count_crtcs):
-            if possible & (1 << ci):
-                return r.crtcs[ci]
-
-    return 0
+    return fallback
 
 
 def probe_connector(
