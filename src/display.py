@@ -289,19 +289,26 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
 
     # Save state for disconnect (line 4 = edid_override_path for cleanup,
     # line 5 = compositor restore JSON when compositor-safe path was used,
-    # line 6 = which compositor backend produced it)
+    # line 6 = which compositor backend produced it,
+    # line 7 = PID of the KWin session that owns the virtual display)
+    kwin_pid = kwin.find_kwin_pid() if backend_name == "kwin" else None
     state_file = SCRIPT_DIR / "virt_display.state"
-    _ = state_file.write_text(
-        f"{card_name}\n{empty_port}\n{','.join(connected_displays)}\n{edid_override_path}\n"
-        f"{json.dumps(restore_specs)}\n{backend_name or ''}"
-    )
+    _write_state_file(state_file, [
+        card_name,
+        empty_port,
+        ",".join(connected_displays),
+        str(edid_override_path),
+        json.dumps(restore_specs),
+        backend_name or "",
+        "" if kwin_pid is None else str(kwin_pid),
+    ])
 
     if backend_name == "kwin":
         # Sunshine's virtual touchscreen/pen appear right after this; map them
         # to the virtual output instead of the now-hidden physical one.
         _ = kwin.start_input_mapping(empty_port)
         # maliit keeps the physical monitor's size until it is restarted.
-        _ = kwin.restart_virtual_keyboard_later()
+        _ = kwin.restart_virtual_keyboard_later(kwin_pid=kwin_pid)
 
     print(f"\n✓ Virtual display successfully connected!")
     print(f"  Port: {card_name}-{empty_port}")
@@ -356,6 +363,25 @@ def active_backend() -> str | None:
     return None
 
 
+def kwin_session_pid() -> int | None:
+    """PID of the compositor that created the active virtual display, if known."""
+    state_file = SCRIPT_DIR / "virt_display.state"
+    try:
+        lines = state_file.read_text().strip().split("\n")
+    except OSError:
+        return None
+    if len(lines) > 6 and lines[6].isdigit():
+        return int(lines[6])
+    return None
+
+
+def _write_state_file(state_file: Path, lines: list[str]) -> None:
+    """Write the state file atomically; the daemon reads it from other threads."""
+    temporary = state_file.with_name(state_file.name + ".tmp")
+    _ = temporary.write_text("\n".join(lines))
+    _ = temporary.replace(state_file)
+
+
 def disconnect() -> bool:
     """
     Disconnect virtual display:
@@ -386,6 +412,7 @@ def disconnect() -> bool:
     # must use for touch mapping and the keyboard restart.
     backend_name = active_backend()
     backend = _SAFE_BACKENDS.get(backend_name) if backend_name else None
+    kwin_pid = kwin_session_pid()
 
     print(f"  Virtual display: {card_name}-{virtual_port}")
     print(f"  Previous displays: {previous_displays if previous_displays else 'None'}")
@@ -405,7 +432,7 @@ def disconnect() -> bool:
             print("  ⚠ No physical outputs left to restore")
         elif backend.restore_outputs(restore_specs):
             print(f"  ✓ Restored: {', '.join(restore_specs.keys())}")
-        elif backend_name == "kwin" and not kwin.session_alive():
+        elif backend_name == "kwin" and not kwin.session_alive(kwin_pid):
             # Logged out: there is no compositor left to restore into.  The
             # physical outputs were only disabled inside KWin, never at the
             # kernel level, so once the virtual output is gone the login
@@ -490,7 +517,7 @@ def disconnect() -> bool:
 
     if backend_name == "kwin":
         # ...and maliit keeps the phone's size until it is restarted.
-        _ = kwin.restart_virtual_keyboard_later()
+        _ = kwin.restart_virtual_keyboard_later(kwin_pid=kwin_pid)
 
     state_file.unlink()
 

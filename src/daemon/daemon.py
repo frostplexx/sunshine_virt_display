@@ -404,7 +404,8 @@ def _hotplug_listener() -> None:
                 log.info("Monitor hotplug: connected %s, disconnected %s — restarting on-screen keyboard",
                          added or "-", removed or "-")
                 last = now
-                kwin.restart_virtual_keyboard_later(delay=1.5)
+                kwin.restart_virtual_keyboard_later(delay=1.5,
+                                                   kwin_pid=display.kwin_session_pid())
     finally:
         sock.close()
 
@@ -450,7 +451,7 @@ def _handle_command(args: list[str]) -> None:
 
             # Logging out of KDE ends KWin: restore the physical monitor then too.
             if display.active_backend() == "kwin":
-                kwin_pid = kwin.find_kwin_pid()
+                kwin_pid = display.kwin_session_pid() or kwin.find_kwin_pid()
                 if kwin_pid:
                     threading.Thread(
                         target=_watch_kwin_pid,
