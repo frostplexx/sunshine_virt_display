@@ -28,27 +28,6 @@ SCRIPT_DIR = Path(__file__).parent.parent.absolute()
 DRM_SYSFS = Path("/sys/class/drm")
 
 
-def _use_hyprland_safe_path() -> bool:
-    """
-    On Hyprland, direct DRM CRTC stealing/reassignment bypasses the
-    compositor's own atomic modeset state: Hyprland never picks up a CRTC we
-    set behind its back, so physical outputs stay dark after disconnect.
-    This is independent of the GPU driver (seen on both NVIDIA and amdgpu,
-    issue #31), so always prefer compositor monitor commands under Hyprland
-    and keep the direct DRM path for other compositors.
-    """
-    return hyprland.available()
-
-
-def _use_kwin_safe_path() -> bool:
-    """
-    KWin has the same problem as Hyprland: it never adopts a CRTC forced
-    behind its back, so physical outputs stay dark after disconnect
-    (issue #31).  Use kscreen-doctor when a KWin Wayland session is reachable.
-    """
-    return kwin.available()
-
-
 # Compositor backends that can hide/restore outputs without direct DRM
 # CRTC manipulation.  Each module provides monitor_specs(), disable_outputs()
 # and restore_outputs().
@@ -56,9 +35,17 @@ _SAFE_BACKENDS = {"hyprland": hyprland, "kwin": kwin}
 
 
 def _select_safe_backend() -> str | None:
-    if _use_hyprland_safe_path():
+    """
+    Prefer a compositor over direct DRM CRTC manipulation.
+
+    Hyprland and KWin never adopt a CRTC that we set behind their back, so
+    physical outputs stay dark after disconnect (issue #31).  This is
+    independent of the GPU driver.  Keep the direct DRM path for other
+    compositors.
+    """
+    if hyprland.available():
         return "hyprland"
-    if _use_kwin_safe_path():
+    if kwin.available():
         return "kwin"
     return None
 
@@ -203,7 +190,6 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
 
     backend_name = _select_safe_backend()
     backend = _SAFE_BACKENDS[backend_name] if backend_name else None
-    safe_path = backend is not None
     restore_specs: dict[str, dict[str, object]] = {}
     hide_outputs: list[str] = []
 
@@ -261,11 +247,9 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
 
     if ready:
         print(f"  ✓ Output ready ({mode})")
-    elif safe_path:
+    elif backend is not None:
         print("  ✗ Timed out waiting for virtual output; refusing to hide physical outputs")
-        _ = run_command(f"sh -c 'echo off > /sys/class/drm/{card_name}-{empty_port}/status'")
-        _ = run_command(f"sh -c 'cat /dev/null > {edid_override_path}'")
-        _ = notify_hotplug(card_name)
+        _abort_virtual_display(card_name, empty_port, edid_override_path)
         return False
     else:
         print(f"  ⚠ Compositor did not assign CRTC — forcing assignment...")
@@ -282,9 +266,7 @@ def connect(width: int, height: int, refresh_rate: int, device: str | None = Non
             print(f"  ✓ Hidden: {', '.join(hide_outputs)}")
         else:
             print("  ✗ Could not hide one or more physical outputs — cleaning up virtual display")
-            _ = run_command(f"sh -c 'echo off > /sys/class/drm/{card_name}-{empty_port}/status'")
-            _ = run_command(f"sh -c 'cat /dev/null > {edid_override_path}'")
-            _ = notify_hotplug(card_name)
+            _abort_virtual_display(card_name, empty_port, edid_override_path)
             return False
 
     # Save state for disconnect (line 4 = edid_override_path for cleanup,
@@ -324,13 +306,31 @@ def _output_connected(card_name: str, output: str) -> bool:
         return False
 
 
-def virtual_connector() -> str | None:
-    """sysfs name (e.g. 'card1-DP-1') of the active virtual display, if any."""
+def _read_state_lines() -> list[str] | None:
     try:
-        lines = (SCRIPT_DIR / "virt_display.state").read_text().strip().split("\n")
+        return (SCRIPT_DIR / "virt_display.state").read_text().strip().split("\n")
     except OSError:
         return None
-    return f"{lines[0]}-{lines[1]}" if len(lines) > 1 and lines[0] and lines[1] else None
+
+
+def _backend_from_state(lines: list[str]) -> str | None:
+    if len(lines) > 5 and lines[5]:
+        return lines[5]
+    if len(lines) > 4 and lines[4] not in ("", "{}"):
+        return "hyprland"  # state files from before the KWin backend
+    return None
+
+
+def _kwin_pid_from_state(lines: list[str]) -> int | None:
+    if len(lines) > 6 and lines[6].isdigit():
+        return int(lines[6])
+    return None
+
+
+def virtual_connector() -> str | None:
+    """sysfs name (e.g. 'card1-DP-1') of the active virtual display, if any."""
+    lines = _read_state_lines()
+    return f"{lines[0]}-{lines[1]}" if lines and len(lines) > 1 and lines[0] and lines[1] else None
 
 
 def physical_connectors() -> frozenset[str]:
@@ -351,28 +351,14 @@ def physical_connectors() -> frozenset[str]:
 
 def active_backend() -> str | None:
     """Compositor backend of the active virtual display session, if any."""
-    state_file = SCRIPT_DIR / "virt_display.state"
-    try:
-        lines = state_file.read_text().strip().split("\n")
-    except OSError:
-        return None
-    if len(lines) > 5 and lines[5]:
-        return lines[5]
-    if len(lines) > 4 and lines[4] not in ("", "{}"):
-        return "hyprland"  # state files from before the KWin backend
-    return None
+    lines = _read_state_lines()
+    return _backend_from_state(lines) if lines else None
 
 
 def kwin_session_pid() -> int | None:
     """PID of the compositor that created the active virtual display, if known."""
-    state_file = SCRIPT_DIR / "virt_display.state"
-    try:
-        lines = state_file.read_text().strip().split("\n")
-    except OSError:
-        return None
-    if len(lines) > 6 and lines[6].isdigit():
-        return int(lines[6])
-    return None
+    lines = _read_state_lines()
+    return _kwin_pid_from_state(lines) if lines else None
 
 
 def _write_state_file(state_file: Path, lines: list[str]) -> None:
@@ -380,6 +366,13 @@ def _write_state_file(state_file: Path, lines: list[str]) -> None:
     temporary = state_file.with_name(state_file.name + ".tmp")
     _ = temporary.write_text("\n".join(lines))
     _ = temporary.replace(state_file)
+
+
+def _abort_virtual_display(card_name: str, port: str, edid_override_path: Path) -> None:
+    """Turn the virtual connector off and clear its EDID after a failed connect."""
+    _ = run_command(f"sh -c 'echo off > /sys/class/drm/{card_name}-{port}/status'")
+    _ = run_command(f"sh -c 'cat /dev/null > {edid_override_path}'")
+    _ = notify_hotplug(card_name)
 
 
 def disconnect() -> bool:
@@ -391,11 +384,10 @@ def disconnect() -> bool:
     print("Disconnecting virtual display...")
 
     state_file = SCRIPT_DIR / "virt_display.state"
-    if not state_file.exists():
+    state_data = _read_state_lines()
+    if state_data is None:
         print("Error: No state file found. Was a virtual display connected?")
         return False
-
-    state_data = state_file.read_text().strip().split("\n")
     if len(state_data) < 2:
         print("Error: Invalid state file")
         return False
@@ -410,9 +402,9 @@ def disconnect() -> bool:
     # Resolve the backend from the state file, not from the restore specs: a
     # session with no physical outputs still has a compositor backend that we
     # must use for touch mapping and the keyboard restart.
-    backend_name = active_backend()
+    backend_name = _backend_from_state(state_data)
     backend = _SAFE_BACKENDS.get(backend_name) if backend_name else None
-    kwin_pid = kwin_session_pid()
+    kwin_pid = _kwin_pid_from_state(state_data)
 
     print(f"  Virtual display: {card_name}-{virtual_port}")
     print(f"  Previous displays: {previous_displays if previous_displays else 'None'}")
